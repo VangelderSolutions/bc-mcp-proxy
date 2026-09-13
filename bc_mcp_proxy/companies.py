@@ -11,6 +11,9 @@ settings, the proxy (when `allow_company_switch` is on):
 * adds one proxy-native tool, `bc_list_companies`, that lists the companies
   of the environment (Business Central's standard `companies` API, called
   with the user's own token; it lists every company, permission or not);
+* optionally limits both to `allowed_companies` (plus the configured
+  company), so an administrator or an embedding package can narrow the
+  choice without Business Central knowing about it;
 * never widens what the user may do: Business Central assigns permission
   sets per company and refuses calls in a company the user lacks rights in,
   which surfaces through the usual permission note.
@@ -112,29 +115,62 @@ class CompanyDirectory:
           "will be validated by Business Central at connect time instead", type(exc).__name__)
       return []
 
+  @property
+  def allowed(self) -> Optional[tuple[str, ...]]:
+    allowed = self._config.allowed_companies
+    if allowed is None:
+      return None
+    return tuple(a.strip() for a in allowed if a and a.strip())
+
+  def visible(self, companies: list[Company]) -> list[Company]:
+    """The companies a call may be routed to: all of them, or those named in
+    allowed_companies (by API or display name) plus the configured company."""
+    allowed = self.allowed
+    if allowed is None:
+      return list(companies)
+    folded = {a.casefold() for a in allowed}
+    default = self.default_company.casefold()
+    return [c for c in companies
+            if c.name.casefold() in folded or c.name.casefold() == default
+            or (c.display_name and c.display_name.casefold() in folded)]
+
   async def resolve(self, requested: str) -> tuple[Optional[str], list[Company]]:
-    """Map a name Claude typed to the exact company name, or None if unknown.
+    """Map a name Claude typed to the exact company name, or None if unknown
+    or not allowed for this connection.
 
     Matches the API name and the display name, case-insensitively. Returns
-    the requested text unchanged when the directory is empty (unverifiable)."""
+    the requested text unchanged when the directory is empty (unverifiable),
+    unless allowed_companies is set: then only names on that list pass."""
     wanted = requested.strip()
     companies = await self.companies()
     if not companies:
-      return wanted, companies
-    match = _match(wanted, companies)
+      allowed = self.allowed
+      if allowed is None:
+        return wanted, companies
+      names = allowed + ((self.default_company,) if self.default_company else ())
+      return next((n for n in names if n.casefold() == wanted.casefold()), None), companies
+    match = _match(wanted, self.visible(companies))
     if match is None:
       companies = await self.companies(refresh=True)
-      match = _match(wanted, companies)
-    return (match.name if match else None), companies
+      match = _match(wanted, self.visible(companies))
+    return (match.name if match else None), self.visible(companies)
 
   async def describe(self) -> str:
-    companies = await self.companies()
+    companies = self.visible(await self.companies())
     default = self.default_company
+    if not companies and self.allowed is not None:
+      names = [default] if default else []
+      names += [a for a in self.allowed if a.casefold() != default.casefold()]
+      lines = [f"The company list could not be read from Business Central. Companies available "
+               f"for this connection (pass the name as the '{COMPANY_ARGUMENT}' argument):"]
+      lines += [f"- {n}" + (" (default for this connection)" if n == default else "") for n in names]
+      return "\n".join(lines)
     if not companies:
       return (f"The company list could not be read from Business Central. The configured "
               f"company is '{default}'; other companies can be tried by name with the "
               f"'{COMPANY_ARGUMENT}' argument and Business Central will accept or refuse them.")
-    lines = [f"Companies in environment '{self._config.environment}' (pass the name as the "
+    scope = "Companies" if self.allowed is None else "Companies available for this connection"
+    lines = [f"{scope} in environment '{self._config.environment}' (pass the name as the "
              f"'{COMPANY_ARGUMENT}' argument of any tool; Business Central decides per company "
              f"whether the signed-in user may work in it):"]
     for c in sorted(companies, key=lambda c: c.name.lower()):
