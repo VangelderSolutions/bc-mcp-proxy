@@ -29,7 +29,7 @@ pwsh dxt/build.ps1
 
 The script:
 1. Stages `manifest.json`, `requirements.txt`, the `bc_mcp_proxy` package and `LICENSE` into `dxt/build/`.
-2. Vendors wheels for Python 3.10–3.14 of the host platform under `server/wheels/cp3XY/`.
+2. Vendors wheels for Python 3.11–3.14 of the host platform under `server/wheels/cp3XY/`.
 3. Packs that staging directory into `dist/vgs-bc-mcp-<version>-<platform>.mcpb` using the `@anthropic-ai/mcpb` CLI (via `npx` if `mcpb` is not on PATH).
 
 The build artifacts (`dist/*.mcpb` and `dxt/build/`) are git-ignored.

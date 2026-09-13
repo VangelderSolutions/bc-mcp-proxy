@@ -8,7 +8,7 @@
 # What this does:
 #   1. Stages the proxy source under dxt/build/server/bc_mcp_proxy.
 #   2. Vendors all Python dependencies once per supported ABI under
-#      dxt/build/server/wheels/cp{310,311,312,313,314}/. Several deps
+#      dxt/build/server/wheels/cp{311,312,313,314}/. Several deps
 #      (pydantic_core, charset_normalizer, rpds, mypyc-built ones)
 #      ship Python-version-specific compiled wheels rather than abi3,
 #      so a single ABI's wheels won't load on a different Python.
@@ -17,7 +17,7 @@
 #   3. Targets win_amd64 wheels.
 #
 # Requires:
-#   - Python 3.10+ on PATH (used to invoke pip)
+#   - Python 3.11+ on PATH (used to invoke pip)
 #   - Node + npx, OR a working `dxt` / `mcpb` CLI on PATH
 
 $ErrorActionPreference = 'Stop'
@@ -52,7 +52,7 @@ foreach ($icon in @('icon.png', 'icon-256.png')) {
   }
 }
 
-$pythonAbis = @('310', '311', '312', '313', '314')
+$pythonAbis = @('311', '312', '313', '314')
 foreach ($abi in $pythonAbis) {
   $pyVer = '3.' + $abi.Substring(1)
   $abiDir = Join-Path $buildDir "server/wheels/cp$abi"

@@ -9,7 +9,7 @@
 # What this does:
 #   1. Stages the proxy source under dxt/build/server/bc_mcp_proxy.
 #   2. Vendors all Python dependencies once per supported ABI under
-#      dxt/build/server/wheels/cp{310,311,312,313,314}/. Several deps
+#      dxt/build/server/wheels/cp{311,312,313,314}/. Several deps
 #      (pydantic_core, charset_normalizer, rpds, mypyc-built ones)
 #      ship Python-version-specific compiled wheels rather than abi3,
 #      so a single ABI's wheels won't load on a different Python.
@@ -18,7 +18,7 @@
 #   3. Wheels target the host's platform tag (manylinux2014 / macosx).
 #
 # Requires:
-#   - Python 3.10+ on PATH
+#   - Python 3.11+ on PATH
 #   - Node + npx, OR a working `mcpb` / `dxt` CLI on PATH
 
 set -euo pipefail
@@ -74,7 +74,7 @@ for icon in icon.png icon-256.png; do
   fi
 done
 
-for abi in 310 311 312 313 314; do
+for abi in 311 312 313 314; do
   py_ver="3.${abi:1}"
   abi_dir="$build_dir/server/wheels/cp$abi"
   echo "Vendoring wheels for Python $py_ver (cp$abi) into $abi_dir ..."
