@@ -492,6 +492,19 @@ python -m pytest
 
 ---
 
+## BC MCP Enterprise
+
+For organisations rolling Claude out to many Business Central users, Vangelder Solutions is preparing **BC MCP Enterprise**, a paid edition built on this proxy:
+
+- Users enter only a Tenant ID; the proxy finds the environment and the companies they have permissions in.
+- Administrators set the allowed companies, default company and MCP configuration per user or security group in Business Central, with the companion app MCP Guard from Microsoft Marketplace.
+- Licences are assigned per user in the Microsoft 365 admin center.
+- It's deployed as a custom team extension in Claude Team/Enterprise.
+
+This open-source proxy stays MIT-licensed and fully usable on its own. The Enterprise edition uses its public `run_proxy(config, prepare=...)` hook (see *Embedding the proxy*). Interested? Contact **support@vangeldersolutions.be**.
+
+---
+
 ## Need help?
 
 The Azure App Registration and the right permissions take attention to detail. For customers who would rather not deal with `Manifest.json`, redirect URIs and delegated permissions themselves, **Vangelder Solutions** offers an **end-to-end MCP setup package**:
