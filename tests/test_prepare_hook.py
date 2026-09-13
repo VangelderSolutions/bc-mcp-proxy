@@ -173,6 +173,10 @@ async def test_allowed_companies_filters_the_listing() -> None:
   text = await _Directory(_cfg(("Demo Nutrisan",)), API_PAYLOAD).describe()
   assert "available for this connection" in text
   assert "CRONUS BE" in text and "Demo Nutrisan" in text and "My Company" not in text
+  # A limited list must not read as the environment's full list (a client then
+  # claims a company "does not exist" when it is only not allowed).
+  assert "may contain other companies" in text and "rather than that it does not exist" in text
+  assert '- CRONUS BE (display name "Vangelder Solutions BV"; default for this connection)' in text
 
 
 async def test_allowed_companies_without_a_readable_directory_only_passes_listed_names() -> None:
@@ -181,6 +185,7 @@ async def test_allowed_companies_without_a_readable_directory_only_passes_listed
   assert (await d.resolve("My Company"))[0] is None
   text = await d.describe()
   assert "- CRONUS BE (default for this connection)" in text and "- Demo Nutrisan" in text
+  assert "may contain other companies" in text
 
 
 async def test_no_allowed_companies_keeps_the_existing_behaviour() -> None:

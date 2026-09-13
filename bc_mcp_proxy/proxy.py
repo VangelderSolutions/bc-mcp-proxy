@@ -1287,7 +1287,8 @@ async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) 
           if config.allowed_companies is not None:
             return company_error(
                 f"Company '{requested}' is not available for this connection in environment "
-                f"'{config.environment}'. Companies: {names}.")
+                f"'{config.environment}': an administrator limited the companies this connection "
+                f"may use (the company may still exist in the environment). Available: {names}.")
           return company_error(
               f"Company '{requested}' does not exist in environment "
               f"'{config.environment}'. Companies: {names}.")
