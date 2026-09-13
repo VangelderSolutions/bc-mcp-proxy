@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import email.utils
 import logging
 import re
@@ -38,7 +39,14 @@ import os
 
 from . import tools_cache
 from .auth import TokenProvider, create_token_provider
-from .config import ProxyConfig, is_v28_endpoint, validate_base_url
+from .companies import (
+    LIST_COMPANIES_TOOL,
+    CompanyDirectory,
+    add_company_switch,
+    company_error,
+    pop_company,
+)
+from .config import V27_SCOPE, ProxyConfig, is_v28_endpoint, validate_base_url
 from .permissions import (
     STATIC_TOOL_RE,
     PermissionRegistry,
@@ -598,9 +606,11 @@ class _ToolsCache:
       ttl_seconds: float,
       annotate: bool = False,
       read_filter: Optional[Callable[[ListToolsResult], ListToolsResult]] = None,
+      company_switch: bool = False,
   ) -> None:
     self._ttl = ttl_seconds
     self._annotate = annotate
+    self._company_switch = company_switch
     # Applied on every read, never on store: the stored (and on-disk) list
     # stays complete because the disk cache is keyed per tenant/env/company/
     # configuration, not per user, and verdicts belong to one user.
@@ -630,7 +640,10 @@ class _ToolsCache:
   def store(self, result: ListToolsResult, now: Optional[float] = None) -> None:
     # Single choke point for every tier (disk -> memory -> pre-warm ->
     # background refresh), so the client always sees the same annotated set.
-    self._result = _annotate_tools(result) if self._annotate else result
+    stored = _annotate_tools(result) if self._annotate else result
+    if self._company_switch:
+      stored = add_company_switch(stored)
+    self._result = stored
     self._fetched_at = now if now is not None else time.monotonic()
 
   @property
@@ -973,6 +986,54 @@ class _UpstreamConnectionManager:
       await self.notifier.maybe_notify(self.tools_cache_obj.get_any())
 
 
+class _CompanySessions:
+  """One upstream connection per company, opened on first use.
+
+  The default company's session is the one run_proxy owns (it fills the
+  tools cache and the permission registry); every other company gets a
+  plain manager whose only job is to serve tool calls. Sessions live until
+  the proxy stops."""
+
+  def __init__(
+      self,
+      default_company: str,
+      factory: Callable[[str], tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]],
+      logger: logging.Logger,
+  ) -> None:
+    self._default = default_company
+    self._factory = factory
+    self._logger = logger
+    self._sessions: dict[str, tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]] = {}
+    self._tasks: list[asyncio.Task[None]] = []
+
+  @property
+  def default_company(self) -> str:
+    return self._default
+
+  def is_default(self, company: str) -> bool:
+    return company.strip() == self._default
+
+  def get_or_start(self, company: str) -> tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]:
+    key = company.strip()
+    if key not in self._sessions:
+      holder, manager = self._factory(key)
+      self._sessions[key] = (holder, manager)
+      self._tasks.append(asyncio.create_task(manager.run(), name=f"bc-mcp-upstream[{key}]"))
+      self._logger.info("Opening an upstream session for company %r", key)
+    return self._sessions[key]
+
+  @property
+  def open_companies(self) -> list[str]:
+    return list(self._sessions)
+
+  async def close(self) -> None:
+    for task in self._tasks:
+      task.cancel()
+    if self._tasks:
+      await asyncio.gather(*self._tasks, return_exceptions=True)
+    self._tasks.clear()
+
+
 async def run_proxy(config: ProxyConfig) -> None:
   """Run the stdio proxy until the MCP client disconnects."""
   logger = logging.getLogger("bc_mcp_proxy")
@@ -1005,8 +1066,29 @@ async def run_proxy(config: ProxyConfig) -> None:
       ttl_seconds=config.tools_cache_ttl_seconds,
       annotate=config.annotate_tools,
       read_filter=registry.filter if registry is not None else None,
+      company_switch=config.allow_company_switch,
   )
   notifier = _ClientNotifier(logger)
+  directory: Optional[CompanyDirectory] = None
+  companies: Optional[_CompanySessions] = None
+  if config.allow_company_switch:
+    # The company list comes from the standard API, which needs the api.*
+    # scope; the same MSAL cache and refresh token serve both scopes.
+    api_config = dataclasses.replace(config, token_scope=V27_SCOPE)
+    directory = CompanyDirectory(config, create_token_provider(api_config, logger=logger), logger)
+
+    def _start_company(company: str) -> tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]:
+      company_config = dataclasses.replace(config, company=company)
+      holder = _UpstreamSessionHolder()
+      manager = _UpstreamConnectionManager(
+          state=holder, config=company_config, url=url,
+          headers=_build_transport_headers(company_config), auth=auth, logger=logger)
+      return holder, manager
+
+    companies = _CompanySessions((config.company or "").strip(), _start_company, logger)
+    logger.info(
+        "BC_ALLOW_COMPANY_SWITCH is on: tools accept a 'company' argument and "
+        "bc_list_companies lists the user's companies (default company %r)", config.company)
   if registry is not None:
     logger.info(
         "BC_HIDE_UNAUTHORIZED_TOOLS is on: after each connect the proxy reads "
@@ -1083,12 +1165,37 @@ async def run_proxy(config: ProxyConfig) -> None:
 
   @server.call_tool()
   async def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
-    logger.debug("Calling tool '%s' (session %s)", name, state.session_id() or "<pending>")
-    result = await _invoke_with_session_recovery(
-        state, manager, logger,
-        f"call_tool[{name}]",
-        lambda s: s.call_tool(name, arguments or {}),
-    )
+    company: Optional[str] = None
+    holder, target_manager = state, manager
+    if directory is not None and companies is not None:
+      if name == LIST_COMPANIES_TOOL:
+        return CallToolResult(content=[TextContent(type="text", text=await directory.describe())])
+      requested, arguments = pop_company(arguments)
+      if requested is not None and not companies.is_default(requested):
+        resolved, known = await directory.resolve(requested)
+        if resolved is None:
+          names = ", ".join(sorted(c.name for c in known))
+          return company_error(
+              f"Company '{requested}' is not available to the signed-in user in environment "
+              f"'{config.environment}'. Available: {names}.")
+        company = resolved
+        holder, target_manager = companies.get_or_start(company)
+    logger.debug("Calling tool '%s' (company %s, session %s)", name,
+                 company or config.company, holder.session_id() or "<pending>")
+    try:
+      result = await _invoke_with_session_recovery(
+          holder, target_manager, logger,
+          f"call_tool[{name}]",
+          lambda s: s.call_tool(name, arguments or {}),
+      )
+    except McpError as exc:
+      if company is None:
+        raise
+      # A company Business Central does not know is rejected at connect;
+      # tell the client in the tool result instead of a bare protocol error.
+      return company_error(
+          f"Business Central refused to open company '{company}' in environment "
+          f"'{config.environment}': {exc.error.message} Use bc_list_companies for the exact names.")
     denial = detect_permission_denied(result)
     if denial is not None:
       # Before the masked-error check: a denial that also happens to contain
@@ -1103,7 +1210,7 @@ async def run_proxy(config: ProxyConfig) -> None:
         if page_id is not None and registry.mark_denied(page_id, denial):
           logger.info("Hiding static tools for PAG%s after a live denial", page_id)
           await notifier.maybe_notify(cache.get_any())
-      return annotate_permission_denied(result, name, arguments, denial)
+      return annotate_permission_denied(result, name, arguments, denial, company)
     masked = _detect_masked_error(result)
     if masked is not None:
       logger.warning(
@@ -1158,6 +1265,8 @@ async def run_proxy(config: ProxyConfig) -> None:
     for task in pending:
       task.cancel()
     await asyncio.gather(*pending, return_exceptions=True)
+    if companies is not None:
+      await companies.close()
     for task in done:
       task.result()  # re-raise upstream/server failures
 

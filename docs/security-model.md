@@ -9,7 +9,7 @@ permalink: /security-model/
 
 Last verified: September 2026 against Business Central 28.0 (2026 release wave 1). Version 29 (2026 release wave 2) keeps the same model.
 
-## The five layers Business Central enforces
+## The layers Business Central enforces
 
 | Layer | What it controls | Where it is configured | Source |
 |---|---|---|---|
@@ -17,9 +17,10 @@ Last verified: September 2026 against Business Central 28.0 (2026 release wave 1
 | **Licence** | The ceiling of what any user can do (a Team Member licence caps even SUPER) | Business Central licence entitlements | [Access controls for Business Central](https://learn.microsoft.com/azure/azure-sovereign-clouds/public/access-controls-d365-business-central) |
 | **Object** | Read/Insert/Modify/Delete on each table, Execute on each page and codeunit | Permission sets assigned to the user (directly or via security group) | [Assign permissions to users and groups](https://learn.microsoft.com/dynamics365/business-central/ui-define-granular-permissions) |
 | **Record** | Which rows of a table the user may see | Security filters on the permission set's table permission (for example `Salesperson Code = AH`) | [Using security filters](https://learn.microsoft.com/dynamics365/business-central/dev-itpro/security/security-filters) |
+| **Company** | Which company a session works in | The `Company` header on the MCP session (one company per session; `vgs-bc-mcp` binds an installation to one company unless *Allow switching company* is on). Permission sets are assigned per company, so this is a scoping choice, not the access control itself | [Assign permissions per company](https://learn.microsoft.com/dynamics365/business-central/ui-define-granular-permissions) |
 | **Exposure** | Which API pages and which operations exist as MCP tools | MCP Server Configuration: Available Tools, Allow Read/Create/Modify/Delete/Bound Actions, *Unblock Edit Tools*, *Dynamic Tool Mode*, *Discover Additional Objects* | [Configure Business Central MCP Server](https://learn.microsoft.com/dynamics365/business-central/dev-itpro/ai/configure-mcp-server) |
 
-The MCP server sits *after* all five. Microsoft states it directly: "All operations are performed with your user identity and permissions, ensuring audit trails show who performed each action" ([MCP overview](https://learn.microsoft.com/dynamics365/business-central/dev-itpro/ai/mcp-overview)) and "you can only create a customer if you have Create permission on the Customer API" ([Connect with Visual Studio Code](https://learn.microsoft.com/dynamics365/business-central/dev-itpro/ai/use-mcp-server-in-vscode)).
+The MCP server sits *after* all of them. Microsoft states it directly: "All operations are performed with your user identity and permissions, ensuring audit trails show who performed each action" ([MCP overview](https://learn.microsoft.com/dynamics365/business-central/dev-itpro/ai/mcp-overview)) and "you can only create a customer if you have Create permission on the Customer API" ([Connect with Visual Studio Code](https://learn.microsoft.com/dynamics365/business-central/dev-itpro/ai/use-mcp-server-in-vscode)).
 
 Every call is also auditable: telemetry event `RT0054` records each MCP tool call with the user, the client (`clientName`, which this proxy sets to `vgs-bc-mcp/<version>`), the Entra app (`authAppId`) and `toolInvocationFailureReason`; event `RT0031` records permission errors shown to users. Changes to MCP configurations are written to the Microsoft Purview audit log. See [Analyze MCP server tool calls telemetry](https://learn.microsoft.com/dynamics365/business-central/dev-itpro/administration/telemetry-mcp-server-trace).
 

@@ -66,6 +66,15 @@ def build_parser() -> argparse.ArgumentParser:
       "--NoHideUnauthorizedTools", action="store_false",
       dest="hide_unauthorized_tools",
       help="Show every tool Business Central lists, even those the user cannot use.")
+  parser.add_argument(
+      "--AllowCompanySwitch", action="store_true",
+      dest="allow_company_switch", default=None,
+      help="Add a 'company' argument to every tool and a bc_list_companies tool so "
+           "a call can run in another company of the environment (default: off).")
+  parser.add_argument(
+      "--NoAllowCompanySwitch", action="store_false",
+      dest="allow_company_switch",
+      help="Keep the connection bound to the configured company.")
   parser.add_argument("--Debug", action="store_true", dest="enable_debug")
   return parser
 
@@ -117,6 +126,9 @@ def parse_args(argv: list[str] | None = None) -> ProxyConfig:
       hide_unauthorized_tools=_select_bool(
           "hide_unauthorized_tools", args.hide_unauthorized_tools, env,
           defaults.hide_unauthorized_tools),
+      allow_company_switch=_select_bool(
+          "allow_company_switch", args.allow_company_switch, env,
+          defaults.allow_company_switch),
       enable_debug=args.enable_debug or _env_flag("BC_DEBUG"),
   )
 
@@ -197,6 +209,7 @@ def _config_from_env() -> dict[str, Optional[str]]:
       "annotate_tools": os.getenv("BC_ANNOTATE_TOOLS"),
       "forward_resources_prompts": os.getenv("BC_FORWARD_RESOURCES_PROMPTS"),
       "hide_unauthorized_tools": os.getenv("BC_HIDE_UNAUTHORIZED_TOOLS"),
+      "allow_company_switch": os.getenv("BC_ALLOW_COMPANY_SWITCH"),
   }
 
 

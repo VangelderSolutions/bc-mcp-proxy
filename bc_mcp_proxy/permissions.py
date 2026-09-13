@@ -198,11 +198,14 @@ def _permission_word(denial: PermissionDenial) -> str:
 
 
 def permission_note(denial: PermissionDenial, tool_name: str,
-                    arguments: Optional[dict[str, Any]] = None) -> str:
+                    arguments: Optional[dict[str, Any]] = None,
+                    company: Optional[str] = None) -> str:
   """The text appended to a refused tool result."""
   target = tool_name
   if tool_name == "bc_actions_invoke" and arguments and arguments.get("ActionName"):
     target = f"action {arguments['ActionName']!s} (via bc_actions_invoke)"
+  if company:
+    target += f" in company '{company}'"
   if denial.object_label is not None:
     what = (f"the signed-in user lacks {_permission_word(denial)} permission on "
             f"{denial.object_label}")
@@ -224,6 +227,7 @@ def annotate_permission_denied(
     tool_name: str,
     arguments: Optional[dict[str, Any]] = None,
     denial: Optional[PermissionDenial] = None,
+    company: Optional[str] = None,
 ) -> CallToolResult:
   """Append the explanatory note and set isError. Unrelated results and
   results that already carry the note are returned unchanged (same object)."""
@@ -236,7 +240,7 @@ def annotate_permission_denied(
     text = getattr(item, "text", None)
     if isinstance(text, str) and text.lstrip().startswith(NOTE_MARKER):
       return result
-  content.append(TextContent(type="text", text="\n\n" + permission_note(denial, tool_name, arguments)))
+  content.append(TextContent(type="text", text="\n\n" + permission_note(denial, tool_name, arguments, company)))
   return result.model_copy(update={"content": content, "isError": True})
 
 
