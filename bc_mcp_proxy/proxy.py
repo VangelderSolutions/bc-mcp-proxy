@@ -747,6 +747,7 @@ class _UpstreamConnectionManager:
       base_backoff: float = DEFAULT_RECONNECT_BASE_BACKOFF,
       max_backoff: float = DEFAULT_RECONNECT_MAX_BACKOFF,
       sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+      disk_cache: bool = True,
   ) -> None:
     self.state = state
     self.config = config
@@ -755,6 +756,10 @@ class _UpstreamConnectionManager:
     self.auth = auth
     self.logger = logger
     self.tools_cache_obj = tools_cache_obj
+    # The on-disk tools/list cache is keyed per tenant/environment/company/
+    # configuration, not per user: right for one user per process, wrong for
+    # a hosted server, which turns it off.
+    self.disk_cache = disk_cache
     self.notifier = notifier
     self.permission_registry = permission_registry
     self.max_attempts = max_attempts
@@ -902,7 +907,8 @@ class _UpstreamConnectionManager:
           try:
             tools_result = await remote_session.list_tools()
             self.tools_cache_obj.store(tools_result)
-            tools_cache.save_disk_cache(self.config, tools_result)
+            if self.disk_cache:
+              tools_cache.save_disk_cache(self.config, tools_result)
             self.logger.info(
                 "Pre-warmed tools/list cache (%d tools)",
                 len(getattr(tools_result, "tools", []) or []),
@@ -1051,6 +1057,22 @@ forward_resources_prompts."""
 
 
 @dataclasses.dataclass
+class RuntimeOptions:
+  """What an embedder may supply per runtime instead of the stdio defaults.
+
+  token_provider: bearer tokens for the MCP endpoint (default: MSAL sign-in of
+  the user running the process). api_token_provider: bearer tokens for the
+  standard API, used by the company directory (default: MSAL with the api.*
+  scope). disk_cache: keep the tools/list cache on disk (default on; a hosted
+  server that serves many users turns it off, the cache is not keyed per user).
+  """
+
+  token_provider: Optional[TokenProvider] = None
+  api_token_provider: Optional[TokenProvider] = None
+  disk_cache: bool = True
+
+
+@dataclasses.dataclass
 class _Runtime:
   """Everything derived from the effective (post-prepare) configuration."""
 
@@ -1062,6 +1084,33 @@ class _Runtime:
   directory: Optional[CompanyDirectory]
   companies: Optional[_CompanySessions]
   manager: _UpstreamConnectionManager
+  disk_cache: bool = True
+
+
+@dataclasses.dataclass
+class RuntimeSlot:
+  """Where the runtime of one MCP client lives.
+
+  Created empty while the prepare hook runs; `runtime` is set once the
+  effective configuration is known. The stdio proxy has exactly one slot; a
+  hosted multi-user server keeps one per authenticated user and hands the
+  right one to the handlers through a RuntimeResolver."""
+
+  state: _UpstreamSessionHolder
+  notifier: _ClientNotifier
+  runtime: Optional[_Runtime] = None
+
+  def get_manager(self) -> _UpstreamConnectionManager:
+    """The default upstream manager; only called once a session exists, which
+    implies the runtime exists."""
+    assert self.runtime is not None
+    return self.runtime.manager
+
+
+RuntimeResolver = Callable[[], Awaitable[RuntimeSlot]]
+"""Called at the start of every MCP request handler and returns the slot the
+request belongs to. It runs inside the request context, so a hosted server can
+look at `server.request_context` (the authenticated HTTP user) to pick it."""
 
 
 def _build_runtime(
@@ -1069,7 +1118,9 @@ def _build_runtime(
     state: _UpstreamSessionHolder,
     notifier: _ClientNotifier,
     logger: logging.Logger,
+    options: Optional[RuntimeOptions] = None,
 ) -> _Runtime:
+  options = options or RuntimeOptions()
   # Defense-in-depth: re-validate the URL at the boundary just before it's
   # handed to the HTTP client. __main__ also validates on startup, but
   # callers that construct ProxyConfig directly (tests, embedders) need
@@ -1081,7 +1132,7 @@ def _build_runtime(
       allow_non_standard=_env_flag("BC_ALLOW_NON_STANDARD_BASE_URL"),
   )
 
-  token_provider = create_token_provider(config, logger=logger)
+  token_provider = options.token_provider or create_token_provider(config, logger=logger)
 
   headers = _build_transport_headers(config)
   url = _build_endpoint_url(config, base_url_override=sanitized_base_url)
@@ -1103,7 +1154,8 @@ def _build_runtime(
     # The company list comes from the standard API, which needs the api.*
     # scope; the same MSAL cache and refresh token serve both scopes.
     api_config = dataclasses.replace(config, token_scope=V27_SCOPE)
-    directory = CompanyDirectory(config, create_token_provider(api_config, logger=logger), logger)
+    api_provider = options.api_token_provider or create_token_provider(api_config, logger=logger)
+    directory = CompanyDirectory(config, api_provider, logger)
 
     def _start_company(company: str) -> tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]:
       company_config = dataclasses.replace(config, company=company)
@@ -1130,7 +1182,7 @@ def _build_runtime(
   # tools for this exact tenant/env/company/config). This is the only
   # thing that lets a freshly-launched proxy answer Claude's first
   # tools/list within Claude's 30s window when BC is mid-cold-start.
-  disk_cached = tools_cache.load_disk_cache(config)
+  disk_cached = tools_cache.load_disk_cache(config) if options.disk_cache else None
   if disk_cached is not None:
     cache.store(disk_cached)
     logger.info(
@@ -1148,9 +1200,11 @@ def _build_runtime(
       tools_cache_obj=cache,
       notifier=notifier,
       permission_registry=registry,
+      disk_cache=options.disk_cache,
   )
   return _Runtime(config=config, url=url, auth=auth, registry=registry, cache=cache,
-                  directory=directory, companies=companies, manager=manager)
+                  directory=directory, companies=companies, manager=manager,
+                  disk_cache=options.disk_cache)
 
 
 async def _prepare_runtime(
@@ -1159,6 +1213,7 @@ async def _prepare_runtime(
     state: _UpstreamSessionHolder,
     notifier: _ClientNotifier,
     logger: logging.Logger,
+    options: Optional[RuntimeOptions] = None,
 ) -> Optional[_Runtime]:
   """Run the embedder's prepare hook, then build the runtime from its result.
 
@@ -1168,7 +1223,9 @@ async def _prepare_runtime(
     prepared = await prepare(config)
     if not isinstance(prepared, ProxyConfig):
       raise TypeError(f"prepare returned {type(prepared).__name__}, expected ProxyConfig")
-    runtime = _build_runtime(prepared, state, notifier, logger)
+    # Positional call kept for embedders and tests that substitute _build_runtime.
+    runtime = (_build_runtime(prepared, state, notifier, logger) if options is None
+               else _build_runtime(prepared, state, notifier, logger, options))
   except asyncio.CancelledError:
     raise
   except Exception as exc:  # noqa: BLE001 - every failure becomes the client-facing error
@@ -1182,24 +1239,19 @@ async def _prepare_runtime(
   return runtime
 
 
-async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) -> None:
-  """Run the stdio proxy until the MCP client disconnects.
+def build_server(
+    config: ProxyConfig,
+    resolve: RuntimeResolver,
+    logger: Optional[logging.Logger] = None,
+) -> tuple[Server, Any]:
+  """Build the MCP server whose handlers serve the runtime that `resolve` returns.
 
-  `prepare` lets a package that embeds the proxy decide the effective
-  configuration at startup (see PrepareHook). Without it the behaviour is
-  exactly that of a plain installation."""
-  logger = logging.getLogger("bc_mcp_proxy")
-  if config.enable_debug:
-    logger.setLevel(logging.DEBUG)
-
-  state = _UpstreamSessionHolder()
-  notifier = _ClientNotifier(logger)
-  # Built up front without a hook (so configuration errors still fail the
-  # process at once, as before); built by the upstream task after the hook.
-  runtime: Optional[_Runtime] = None
-  if prepare is None:
-    runtime = _build_runtime(config, state, notifier, logger)
-
+  The stdio proxy resolves to its single slot (see run_proxy); a hosted server
+  keeps one slot per authenticated user and resolves on the request context.
+  Returns the server and its initialization options (tools.listChanged on).
+  Fields read here and therefore fixed per server: server_name, server_version,
+  instructions and forward_resources_prompts."""
+  logger = logger or logging.getLogger("bc_mcp_proxy")
   instructions = config.instructions or (
       "Bridge MCP stdio clients to Microsoft Dynamics 365 Business Central."
       " All tool definitions and executions are forwarded to the configured Business"
@@ -1212,6 +1264,8 @@ async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) 
 
   @server.list_tools()
   async def _list_tools() -> Any:
+    slot = await resolve()
+    state, notifier, runtime = slot.state, slot.notifier, slot.runtime
     # Capture the live ServerSession so the background upstream pre-warm
     # can push tools/list_changed once auth completes. request_context is
     # only valid inside a request — which this always is.
@@ -1249,7 +1303,8 @@ async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) 
       logger.debug("Serving stale tools/list; refreshing in background")
       notifier.record_served(stale)
       asyncio.create_task(
-          _refresh_tools_cache(state, cache, config_now, logger, notifier))
+          _refresh_tools_cache(state, cache, config_now, logger, notifier,
+                               disk_cache=runtime.disk_cache))
       return stale
 
     # Nothing cached (cold first run, auth almost certainly still pending).
@@ -1267,10 +1322,13 @@ async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) 
 
   @server.call_tool()
   async def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
-    if runtime is None:
+    slot = await resolve()
+    state, notifier = slot.state, slot.notifier
+    if slot.runtime is None:
       # Waits out the prepare hook: returns once the default session is up,
       # raises its error if preparation failed.
       await state.wait_active()
+    runtime = slot.runtime
     assert runtime is not None
     config, manager, registry, cache = runtime.config, runtime.manager, runtime.registry, runtime.cache
     directory, companies = runtime.directory, runtime.companies
@@ -1343,15 +1401,8 @@ async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) 
       )
     return annotated
 
-  def _current_manager() -> _UpstreamConnectionManager:
-    # Only reached once a session exists, and a session exists only after
-    # the runtime was built.
-    assert runtime is not None
-    return runtime.manager
-
   if config.forward_resources_prompts:
-    _register_resource_and_prompt_handlers(
-        server, state, _current_manager, logger)
+    _register_resource_and_prompt_handlers_for(server, resolve, logger)
 
   # Advertise tools.listChanged so the client honours the
   # notifications/tools/list_changed we push after a cold-start auth.
@@ -1359,20 +1410,63 @@ async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) 
   # handlers are registered above.
   init_options = server.create_initialization_options(
       NotificationOptions(tools_changed=True))
+  return server, init_options
 
-  async def _run_upstream() -> None:
-    nonlocal runtime
-    if runtime is None:
-      assert prepare is not None
-      runtime = await _prepare_runtime(config, prepare, state, notifier, logger)
-      if runtime is None:
-        # Like a permanent rejection: stay up so the client sees the error.
-        await asyncio.Event().wait()
-        return  # pragma: no cover - only on cancellation, which re-raises
-    await runtime.manager.run()
+
+async def run_slot_upstream(
+    slot: RuntimeSlot,
+    config: ProxyConfig,
+    prepare: Optional[PrepareHook],
+    logger: logging.Logger,
+    options: Optional[RuntimeOptions] = None,
+) -> None:
+  """Prepare the slot (when a hook is given) and run its upstream connection
+  until cancelled. After a failed preparation it stays parked, so the client
+  keeps getting the error instead of a dead connection."""
+  if slot.runtime is None:
+    if prepare is None:
+      raise RuntimeError("the slot has no runtime and no prepare hook to build one")
+    slot.runtime = await _prepare_runtime(config, prepare, slot.state, slot.notifier, logger, options)
+    if slot.runtime is None:
+      # Like a permanent rejection: stay up so the client sees the error.
+      await asyncio.Event().wait()
+      return  # pragma: no cover - only on cancellation, which re-raises
+  await slot.runtime.manager.run()
+
+
+async def close_slot(slot: RuntimeSlot) -> None:
+  """Close the per-company upstream sessions of a slot. The default session
+  closes with the task that runs run_slot_upstream."""
+  if slot.runtime is not None and slot.runtime.companies is not None:
+    await slot.runtime.companies.close()
+
+
+async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) -> None:
+  """Run the stdio proxy until the MCP client disconnects.
+
+  `prepare` lets a package that embeds the proxy decide the effective
+  configuration at startup (see PrepareHook). Without it the behaviour is
+  exactly that of a plain installation. Embedders that need another transport
+  or several users build on build_server, RuntimeSlot and run_slot_upstream
+  instead."""
+  logger = logging.getLogger("bc_mcp_proxy")
+  if config.enable_debug:
+    logger.setLevel(logging.DEBUG)
+
+  slot = RuntimeSlot(state=_UpstreamSessionHolder(), notifier=_ClientNotifier(logger))
+  # Built up front without a hook (so configuration errors still fail the
+  # process at once, as before); built by the upstream task after the hook.
+  if prepare is None:
+    slot.runtime = _build_runtime(config, slot.state, slot.notifier, logger)
+
+  async def _resolve() -> RuntimeSlot:
+    return slot
+
+  server, init_options = build_server(config, _resolve, logger)
 
   async with stdio_server() as (local_read, local_write):
-    upstream_task = asyncio.create_task(_run_upstream(), name="bc-mcp-upstream")
+    upstream_task = asyncio.create_task(
+        run_slot_upstream(slot, config, prepare, logger), name="bc-mcp-upstream")
     server_task = asyncio.create_task(
         server.run(local_read, local_write, init_options),
         name="bc-mcp-stdio-server",
@@ -1386,8 +1480,7 @@ async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) 
       for task in pending:
         task.cancel()
       await asyncio.gather(*pending, return_exceptions=True)
-      if runtime is not None and runtime.companies is not None:
-        await runtime.companies.close()
+      await close_slot(slot)
     for task in done:
       task.result()  # re-raise upstream/server failures
 
@@ -1396,6 +1489,24 @@ def _register_resource_and_prompt_handlers(
     server: Server,
     state: _UpstreamSessionHolder,
     get_manager: Callable[[], _UpstreamConnectionManager],
+    logger: logging.Logger,
+) -> None:
+  """Register resources/* and prompts/* for one fixed upstream.
+
+  Kept for callers that hold a state and a manager getter (the tests among
+  them); build_server uses the resolver-based variant below."""
+  slot = RuntimeSlot(state=state, notifier=_ClientNotifier(logger))
+  slot.get_manager = get_manager  # type: ignore[method-assign]
+
+  async def _resolve() -> RuntimeSlot:
+    return slot
+
+  _register_resource_and_prompt_handlers_for(server, _resolve, logger)
+
+
+def _register_resource_and_prompt_handlers_for(
+    server: Server,
+    resolve: RuntimeResolver,
     logger: logging.Logger,
 ) -> None:
   """Forward resources/* and prompts/* to Business Central.
@@ -1409,7 +1520,7 @@ def _register_resource_and_prompt_handlers(
   session-terminated recovery as tool calls.
   """
 
-  def _raise_if_fatal() -> None:
+  def _raise_if_fatal(state: _UpstreamSessionHolder) -> None:
     fatal = state.fatal
     if fatal is not None:
       raise fatal
@@ -1423,20 +1534,22 @@ def _register_resource_and_prompt_handlers(
 
   @server.list_resources()
   async def _list_resources() -> Any:
-    _raise_if_fatal()
-    if not state.upstream_supports("resources"):
+    slot = await resolve()
+    _raise_if_fatal(slot.state)
+    if not slot.state.upstream_supports("resources"):
       return ListResourcesResult(resources=[])
     return await _invoke_with_session_recovery(
-        state, get_manager(), logger, "list_resources",
+        slot.state, slot.get_manager(), logger, "list_resources",
         lambda s: s.list_resources())
 
   @server.list_resource_templates()
   async def _list_resource_templates() -> Any:
-    _raise_if_fatal()
-    if not state.upstream_supports("resources"):
+    slot = await resolve()
+    _raise_if_fatal(slot.state)
+    if not slot.state.upstream_supports("resources"):
       return []
     result = await _invoke_with_session_recovery(
-        state, get_manager(), logger, "list_resource_templates",
+        slot.state, slot.get_manager(), logger, "list_resource_templates",
         lambda s: s.list_resource_templates())
     return list(getattr(result, "resourceTemplates", None) or [])
 
@@ -1446,12 +1559,13 @@ def _register_resource_and_prompt_handlers(
     # TextResourceContents/BlobResourceContents keyed on the *request* URI,
     # which drops per-content URIs and mangles multi-part results. BC's
     # ReadResourceResult must reach the client verbatim.
-    _raise_if_fatal()
-    if not state.upstream_supports("resources"):
+    slot = await resolve()
+    _raise_if_fatal(slot.state)
+    if not slot.state.upstream_supports("resources"):
       raise _unsupported("resources")
     uri = req.params.uri
     result = await _invoke_with_session_recovery(
-        state, get_manager(), logger, f"read_resource[{uri}]",
+        slot.state, slot.get_manager(), logger, f"read_resource[{uri}]",
         lambda s: s.read_resource(uri))
     return ServerResult(result)
 
@@ -1459,20 +1573,22 @@ def _register_resource_and_prompt_handlers(
 
   @server.list_prompts()
   async def _list_prompts() -> Any:
-    _raise_if_fatal()
-    if not state.upstream_supports("prompts"):
+    slot = await resolve()
+    _raise_if_fatal(slot.state)
+    if not slot.state.upstream_supports("prompts"):
       return ListPromptsResult(prompts=[])
     return await _invoke_with_session_recovery(
-        state, get_manager(), logger, "list_prompts",
+        slot.state, slot.get_manager(), logger, "list_prompts",
         lambda s: s.list_prompts())
 
   @server.get_prompt()
   async def _get_prompt(name: str, arguments: Optional[dict[str, str]]) -> GetPromptResult:
-    _raise_if_fatal()
-    if not state.upstream_supports("prompts"):
+    slot = await resolve()
+    _raise_if_fatal(slot.state)
+    if not slot.state.upstream_supports("prompts"):
       raise _unsupported("prompts")
     return await _invoke_with_session_recovery(
-        state, get_manager(), logger, f"get_prompt[{name}]",
+        slot.state, slot.get_manager(), logger, f"get_prompt[{name}]",
         lambda s: s.get_prompt(name, arguments))
 
 
@@ -1509,6 +1625,8 @@ async def _refresh_tools_cache(
     config: ProxyConfig,
     logger: logging.Logger,
     notifier: Optional[_ClientNotifier] = None,
+    *,
+    disk_cache: bool = True,
 ) -> None:
   """Background refresh used when serving a stale cached entry."""
   try:
@@ -1516,7 +1634,8 @@ async def _refresh_tools_cache(
     async with cache.lock:
       result = await session.list_tools()
       cache.store(result)
-      tools_cache.save_disk_cache(config, result)
+      if disk_cache:
+        tools_cache.save_disk_cache(config, result)
     logger.debug("Refreshed stale tools/list cache")
     if notifier is not None:
       # If the refreshed set differs from what the client holds, nudge it.
