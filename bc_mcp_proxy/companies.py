@@ -44,6 +44,11 @@ _COMPANY_ARGUMENT_SCHEMA: dict[str, Any] = {
                     "configured for this connection. Use bc_list_companies to see the names."),
 }
 _STANDARD_API_HOST = f"https://{LEGACY_HOST}"
+# Without this, a client reads the limited list as the environment's full list
+# and tells the user a company "does not exist" when it is only not allowed.
+_LIMITED_NOTE = ("The environment may contain other companies; they are not available for this "
+                 "connection because an administrator limited the choice. Say that a company is "
+                 "not available here rather than that it does not exist.")
 
 
 @dataclass(frozen=True)
@@ -164,21 +169,27 @@ class CompanyDirectory:
       lines = [f"The company list could not be read from Business Central. Companies available "
                f"for this connection (pass the name as the '{COMPANY_ARGUMENT}' argument):"]
       lines += [f"- {n}" + (" (default for this connection)" if n == default else "") for n in names]
+      lines.append(_LIMITED_NOTE)
       return "\n".join(lines)
     if not companies:
       return (f"The company list could not be read from Business Central. The configured "
               f"company is '{default}'; other companies can be tried by name with the "
               f"'{COMPANY_ARGUMENT}' argument and Business Central will accept or refuse them.")
     scope = "Companies" if self.allowed is None else "Companies available for this connection"
-    lines = [f"{scope} in environment '{self._config.environment}' (pass the name as the "
-             f"'{COMPANY_ARGUMENT}' argument of any tool; Business Central decides per company "
-             f"whether the signed-in user may work in it):"]
+    lines = [f"{scope} in environment '{self._config.environment}' (pass the company name, or its "
+             f"display name, as the '{COMPANY_ARGUMENT}' argument of any tool; Business Central "
+             f"decides per company whether the signed-in user may work in it):"]
     for c in sorted(companies, key=lambda c: c.name.lower()):
-      marker = " (default for this connection)" if c.name == default else ""
-      shown = f"{c.name}" + (f" -- {c.display_name}" if c.display_name and c.display_name != c.name else "")
-      lines.append(f"- {shown}{marker}")
+      notes = []
+      if c.display_name and c.display_name != c.name:
+        notes.append(f'display name "{c.display_name}"')
+      if c.name == default:
+        notes.append("default for this connection")
+      lines.append(f"- {c.name}" + (f" ({'; '.join(notes)})" if notes else ""))
     if default and not any(c.name == default for c in companies):
       lines.append(f"- {default} (default for this connection; not in the list above)")
+    if self.allowed is not None:
+      lines.append(_LIMITED_NOTE)
     return "\n".join(lines)
 
 
