@@ -180,6 +180,13 @@ class ProxyConfig:
   # and only helps static tool mode. BC enforces every call regardless.
   # BC_HIDE_UNAUTHORIZED_TOOLS=1 / --HideUnauthorizedTools enables it.
   hide_unauthorized_tools: bool = False
+  # Let the client run a tool in another company of the same environment
+  # through an optional `company` argument (one upstream session per
+  # company) and list the user's companies with bc_list_companies. Off by
+  # default: an installation then stays bound to `company`. Business Central
+  # enforces per-company permissions either way.
+  # BC_ALLOW_COMPANY_SWITCH=1 / --AllowCompanySwitch enables it.
+  allow_company_switch: bool = False
   # Persistent on-disk tools/list cache TTL.
   tools_disk_cache_ttl_seconds: float = 24 * 60 * 60
 

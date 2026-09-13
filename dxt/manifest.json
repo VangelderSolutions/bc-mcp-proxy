@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "vgs-bc-mcp",
   "display_name": "Business Central MCP Proxy",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "description": "Connect Claude Desktop to Microsoft Dynamics 365 Business Central through Microsoft's official Business Central MCP server.",
   "long_description": "Connects Claude Desktop to your Business Central environment (version 26 and later) through Microsoft's official MCP server. Every call runs under your own Business Central user, so your permission sets, security filters and licence apply unchanged.\n\n**What the proxy adds**\n\n- Browser sign-in with automatic device-code fallback, and silent token refresh afterwards.\n- Instant tool list on start-up, with reconnect and retry on transient errors and rate limits.\n- Read-only and destructive hints on every tool, so Claude asks before it writes.\n- A clear note when Business Central refuses a call for lack of permission, and an optional setting to hide tools you may not use.\n- Pass-through of resources and prompts for Business Central 28 and 29.\n\n**Before you install**\n\nYou need an Azure app registration with the Business Central delegated permissions and 'http://localhost' as a mobile and desktop redirect URI. The settings below ask for its tenant ID and client ID, plus your environment and company name.\n\nMaintained by Vangelder Solutions, an independent Microsoft partner; not affiliated with Microsoft or Anthropic. Privacy policy: https://vangeldersolutions.github.io/bc-mcp-proxy/privacy/",
   "author": {
@@ -63,7 +63,8 @@
         "BC_LOG_LEVEL": "${user_config.log_level}",
         "BC_BASE_URL": "${user_config.base_url}",
         "BC_AUTH_MODE": "${user_config.auth_mode}",
-        "BC_HIDE_UNAUTHORIZED_TOOLS": "${user_config.hide_unauthorized_tools}"
+        "BC_HIDE_UNAUTHORIZED_TOOLS": "${user_config.hide_unauthorized_tools}",
+        "BC_ALLOW_COMPANY_SWITCH": "${user_config.allow_company_switch}"
       },
       "platform_overrides": {
         "win32": {
@@ -137,12 +138,20 @@
       "description": "Static tool mode only: hide the tools for pages you may not read (one extra read per page after connecting). Business Central still enforces every call.",
       "required": false,
       "default": false
+    },
+    "allow_company_switch": {
+      "type": "boolean",
+      "title": "Allow switching company",
+      "description": "Let Claude run a call in another company of the same environment through a 'company' argument, and list the environment's companies with bc_list_companies. Business Central still enforces your permissions per company.",
+      "required": false,
+      "default": false
     }
   },
   "tools": [
     { "name": "bc_actions_search", "description": "Search the Business Central actions (API pages and operations) available to the signed-in user. Read-only." },
     { "name": "bc_actions_describe", "description": "Describe one Business Central action: its parameters, filters and the operations it allows. Read-only." },
-    { "name": "bc_actions_invoke", "description": "Invoke a Business Central action: read records, or create / update / delete / post when the MCP configuration allows writes. Treated as destructive." }
+    { "name": "bc_actions_invoke", "description": "Invoke a Business Central action: read records, or create / update / delete / post when the MCP configuration allows writes. Treated as destructive." },
+    { "name": "bc_list_companies", "description": "List the companies of the Business Central environment (only when switching company is allowed). Read-only." }
   ],
   "tools_generated": true
 }
