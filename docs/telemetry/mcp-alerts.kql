@@ -1,0 +1,85 @@
+// Business Central MCP server: detection queries for Application Insights.
+// Source event: RT0054 "MCP Server tool called" (Business Central 28+).
+// Not yet run against live telemetry by the maintainers; adjust the lists to
+// your tenant before turning a query into an alert rule.
+
+// ---------------------------------------------------------------------------
+// 0. Overview: who calls what, where, through which client (last 7 days)
+// ---------------------------------------------------------------------------
+traces
+| where timestamp > ago(7d)
+| where customDimensions.eventId == "RT0054"
+| extend configurationName = tostring(customDimensions.configurationName),
+         companyName = tostring(customDimensions.companyName),
+         environmentName = tostring(customDimensions.environmentName),
+         clientName = tostring(customDimensions.clientName),
+         authAppId = tostring(customDimensions.authAppId),
+         result = tostring(customDimensions.toolInvocationResult)
+| summarize calls = count(), failures = countif(result == "Failure")
+    by user_Id, environmentName, companyName, configurationName, clientName, authAppId
+| order by calls desc
+
+// ---------------------------------------------------------------------------
+// 1. Configuration a user is not expected to use
+//    Business Central cannot restrict configurations per user (measured on
+//    BC 28), so detection is the way to notice it. Maintain the list here.
+// ---------------------------------------------------------------------------
+let allowed = datatable(user_Id: string, configurationName: string) [
+    "00000000-0000-0000-0000-000000000001", "Sales Read",
+    "00000000-0000-0000-0000-000000000002", "Finance Read"
+];
+traces
+| where timestamp > ago(1d)
+| where customDimensions.eventId == "RT0054"
+| extend configurationName = tostring(customDimensions.configurationName),
+         companyName = tostring(customDimensions.companyName)
+| join kind=leftanti allowed on user_Id, configurationName
+| summarize calls = count(), firstSeen = min(timestamp), lastSeen = max(timestamp)
+    by user_Id, configurationName, companyName
+
+// ---------------------------------------------------------------------------
+// 2. Company outside the expected set for MCP use
+// ---------------------------------------------------------------------------
+let expectedCompanies = dynamic(["CRONUS BE"]);
+traces
+| where timestamp > ago(1d)
+| where customDimensions.eventId == "RT0054"
+| extend companyName = tostring(customDimensions.companyName),
+         configurationName = tostring(customDimensions.configurationName)
+| where companyName !in (expectedCompanies)
+| summarize calls = count() by user_Id, companyName, configurationName
+
+// ---------------------------------------------------------------------------
+// 3. MCP client other than the approved proxy (someone bypassing vgs-bc-mcp)
+// ---------------------------------------------------------------------------
+traces
+| where timestamp > ago(1d)
+| where customDimensions.eventId == "RT0054"
+| extend clientName = tostring(customDimensions.clientName),
+         authAppId = tostring(customDimensions.authAppId)
+| where clientName !startswith "vgs-bc-mcp/"
+| summarize calls = count() by user_Id, clientName, authAppId
+
+// ---------------------------------------------------------------------------
+// 4. Unknown app registration (client ID) used to reach the MCP server
+// ---------------------------------------------------------------------------
+let approvedApps = dynamic(["<client-id-of-your-mcp-app-registration>"]);
+traces
+| where timestamp > ago(1d)
+| where customDimensions.eventId == "RT0054"
+| extend authAppId = tostring(customDimensions.authAppId),
+         clientName = tostring(customDimensions.clientName)
+| where authAppId !in (approvedApps)
+| summarize calls = count() by user_Id, authAppId, clientName
+
+// ---------------------------------------------------------------------------
+// 5. Burst of refused calls (a user probing beyond their permissions)
+// ---------------------------------------------------------------------------
+traces
+| where timestamp > ago(1h)
+| where customDimensions.eventId == "RT0054"
+| where tostring(customDimensions.toolInvocationResult) == "Failure"
+| where tostring(customDimensions.toolInvocationFailureReason) contains "permission"
+| summarize refused = count(), tools = make_set(tostring(customDimensions.toolName), 20)
+    by user_Id, bin(timestamp, 10m)
+| where refused >= 10

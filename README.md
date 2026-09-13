@@ -454,6 +454,8 @@ Pre-built bundles for these three platforms are attached to every GitHub Release
 
 > **Does MCP respect Business Central permissions?** Yes: Microsoft's MCP server runs every call under the signed-in user's identity, so permission sets, security filters, licence entitlements and the MCP configuration all apply unchanged. The proxy adds a clear note on every permission denial and, optionally, hides the tools the user cannot use. Read the full write-up with Microsoft's sources and our measurements: [Security model](https://vangeldersolutions.github.io/bc-mcp-proxy/security-model/) (source: [`docs/security-model.md`](docs/security-model.md)).
 
+> **Rolling it out in a company?** Users can change the extension settings, edit local files or use another MCP client, so the controls that matter sit in Business Central, Entra ID and Claude Team/Enterprise. Our measured checklist, including the finding that MCP configurations cannot be restricted per user, is in [Enterprise hardening](https://vangeldersolutions.github.io/bc-mcp-proxy/enterprise-hardening/).
+
 - **No application secrets.** Delegated permissions only via the device-code flow. No client secret to manage or rotate.
 - **Tokens cached locally** via `msal-extensions` with OS-specific secure storage (DPAPI on Windows, Keychain on macOS, libsecret on Linux). No plaintext on disk.
 - **No tokens in logs.** The proxy never logs access or refresh tokens; debug output contains only expiry timestamps for diagnosis.

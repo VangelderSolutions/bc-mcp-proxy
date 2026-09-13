@@ -8,6 +8,7 @@ Connect Claude Desktop, Visual Studio Code, Cursor or any other MCP client to yo
 
 - **Documentation and setup guide:** [README on GitHub](https://github.com/VangelderSolutions/bc-mcp-proxy#readme)
 - **Security model (does MCP respect BC permissions?):** [/security-model/](security-model/)
+- **Enterprise hardening (what users can change, and what stops them):** [/enterprise-hardening/](enterprise-hardening/)
 - **Privacy policy:** [/privacy/](privacy/)
 - **Releases (Claude Desktop bundles):** [GitHub Releases](https://github.com/VangelderSolutions/bc-mcp-proxy/releases)
 - **PyPI package:** [vgs-bc-mcp](https://pypi.org/project/vgs-bc-mcp/)
