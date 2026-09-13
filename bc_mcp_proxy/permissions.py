@@ -29,9 +29,9 @@ This module gives the proxy two things:
   (and their write siblings) for pages the user cannot read. Business
   Central stays the enforcer; hiding is a courtesy to the client, never a
   security boundary.
-* `read_guard_permissions`: when the environment runs the open-source
-  companion app bc-mcp-guard (https://github.com/VangelderSolutions/bc-mcp-guard),
-  its `effectivePermissions` API page answers the same question in one call
+* `read_guard_permissions`: when the environment runs the companion app
+  MCP Guard (Vangelder Solutions, free on AppSource), its
+  `effectivePermissions` API page answers the same question in one call
   and also knows about write permissions and page Execute, so the write
   tools can be hidden per operation. The guard sees empty tables the user
   may not read (a probe cannot); it does not see tables a page reads in code
@@ -84,7 +84,7 @@ _DENIAL_CODE_PREFIXES = ("Authorization_",)
 # Marker at the start of the proxy's note; also the idempotency guard.
 NOTE_MARKER = "[bc-mcp-proxy] Business Central refused this call"
 
-# The bc-mcp-guard companion's API page as BC names its static List tool
+# The MCP Guard companion's API page as BC names its static List tool
 # (entity set "effectivePermissions"; the page id is whatever the installing
 # partner chose).
 GUARD_TOOL_RE = re.compile(r"^List_?EffectivePermissions_PAG(?P<id>\d+)$", re.IGNORECASE)
