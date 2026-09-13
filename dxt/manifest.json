@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "vgs-bc-mcp",
   "display_name": "Business Central MCP Proxy",
-  "version": "0.9.1",
-  "description": "Bridge Claude Desktop to your Microsoft Dynamics 365 Business Central environment through Microsoft's official Business Central MCP server.",
-  "long_description": "Resilient stdio MCP proxy that forwards tool calls from Claude Desktop to the Business Central MCP HTTP endpoint. Forked from microsoft/BCTech samples/BcMCPProxyPython with production fixes: interactive browser sign-in (device-code fallback), non-blocking tool discovery (no 30s first-call hang) that emits tools/list_changed, reconnect on transient httpx errors with exponential backoff, pre-emptive MSAL silent token refresh, surfacing of upstream errors that arrive masked as successful responses, retry with backoff on Business Central rate limits (429/503), Base64 encoding of non-ASCII company/configuration names (MCP SEP-2243), tool annotations (read-only vs destructive) so Claude can auto-approve reads, and pass-through of resources and prompts for BC v28 and v29 (2026 release wave 2). Interactive sign-in requires 'http://localhost' added to the Azure app registration under Authentication > Mobile and desktop applications. Maintained by Vangelder Solutions, an independent Microsoft partner; not affiliated with Microsoft or Anthropic. Tenant ID, client ID, environment, company and configuration name are configured at install time via the prompts below. Privacy policy: https://vangeldersolutions.github.io/bc-mcp-proxy/privacy/",
+  "version": "0.9.2",
+  "description": "Connect Claude Desktop to Microsoft Dynamics 365 Business Central through Microsoft's official Business Central MCP server.",
+  "long_description": "Connects Claude Desktop to your Business Central environment (version 26 and later) through Microsoft's official MCP server. Every call runs under your own Business Central user, so your permission sets, security filters and licence apply unchanged.\n\n**What the proxy adds**\n\n- Browser sign-in with automatic device-code fallback, and silent token refresh afterwards.\n- Instant tool list on start-up, with reconnect and retry on transient errors and rate limits.\n- Read-only and destructive hints on every tool, so Claude asks before it writes.\n- A clear note when Business Central refuses a call for lack of permission, and an optional setting to hide tools you may not use.\n- Pass-through of resources and prompts for Business Central 28 and 29.\n\n**Before you install**\n\nYou need an Azure app registration with the Business Central delegated permissions and 'http://localhost' as a mobile and desktop redirect URI. The settings below ask for its tenant ID and client ID, plus your environment and company name.\n\nMaintained by Vangelder Solutions, an independent Microsoft partner; not affiliated with Microsoft or Anthropic. Privacy policy: https://vangeldersolutions.github.io/bc-mcp-proxy/privacy/",
   "author": {
     "name": "Vangelder Solutions",
     "email": "support@vangeldersolutions.be",
@@ -37,7 +37,7 @@
     "claude_desktop": ">=0.10.0",
     "platforms": ["darwin", "win32", "linux"],
     "runtimes": {
-      "python": ">=3.10 <4"
+      "python": ">=3.11 <4"
     }
   },
   "server": {
@@ -76,21 +76,21 @@
     "tenant_id": {
       "type": "string",
       "title": "Azure Tenant ID",
-      "description": "The Directory (tenant) ID of the Azure Active Directory hosting your Business Central environment. Find it in the Azure portal under Microsoft Entra ID > Overview.",
+      "description": "Directory (tenant) ID from the Entra admin center, Overview page.",
       "required": true,
       "sensitive": false
     },
     "client_id": {
       "type": "string",
       "title": "Azure Client ID",
-      "description": "The Application (client) ID of the Azure App Registration you created for this proxy. The app must have the Dynamics 365 Business Central delegated permissions (Financials.ReadWrite.All, user_impersonation) and 'Allow public client flows' enabled.",
+      "description": "Application (client) ID of your app registration. It needs the Business Central delegated permissions and public client flows enabled.",
       "required": true,
       "sensitive": false
     },
     "environment": {
       "type": "string",
       "title": "Business Central Environment",
-      "description": "The Business Central environment name (for example: Production, Sandbox, MyDevEnv). Must match the environment as it appears in the BC admin center.",
+      "description": "Environment name exactly as shown in the Business Central admin center, for example Production or Sandbox.",
       "default": "Production",
       "required": true,
       "sensitive": false
@@ -98,14 +98,14 @@
     "company": {
       "type": "string",
       "title": "Business Central Company",
-      "description": "The exact company name within the environment (case-sensitive). Example: 'CRONUS USA' or 'My Company Ltd.'.",
+      "description": "Company name exactly as shown in Business Central (case-sensitive), for example CRONUS USA.",
       "required": true,
       "sensitive": false
     },
     "configuration_name": {
       "type": "string",
       "title": "BC MCP Configuration Name",
-      "description": "Optional name of a specific Business Central MCP configuration to forward as the ConfigurationName header. Leave empty if your environment doesn't use named configurations.",
+      "description": "Name of the MCP Server Configuration to use. Leave empty to use the default configuration.",
       "required": false,
       "sensitive": false,
       "default": ""
@@ -113,28 +113,28 @@
     "log_level": {
       "type": "string",
       "title": "Log level",
-      "description": "Verbosity of the proxy's own logging. One of DEBUG, INFO, WARNING, ERROR. INFO is recommended; switch to DEBUG only when troubleshooting.",
+      "description": "INFO is recommended. Use DEBUG only when troubleshooting.",
       "required": false,
       "default": "INFO"
     },
     "base_url": {
       "type": "string",
       "title": "Business Central MCP endpoint",
-      "description": "Default is Microsoft's single MCP host for BC v28 and v29 (https://mcp.businesscentral.dynamics.com). Only for BC v27 and earlier set this to the legacy https://api.businesscentral.dynamics.com — the proxy auto-switches the OAuth scope and request headers to match.",
+      "description": "Leave the default for Business Central 28 and later. For version 27 and earlier use https://api.businesscentral.dynamics.com; the proxy adjusts scope and headers.",
       "required": false,
       "default": "https://mcp.businesscentral.dynamics.com"
     },
     "auth_mode": {
       "type": "string",
       "title": "Authentication mode",
-      "description": "How to sign in on first use. 'auto' (recommended): open the browser for an interactive sign-in, automatically falling back to the device-code flow if no browser is available. 'interactive': browser only. 'device_code': skip the browser entirely (use on headless/server hosts). Interactive sign-in requires the Azure app registration to have 'http://localhost' added under Authentication > Mobile and desktop applications.",
+      "description": "auto (recommended): browser sign-in with device-code fallback. interactive: browser only. device_code: no browser, for headless hosts.",
       "required": false,
       "default": "auto"
     },
     "hide_unauthorized_tools": {
       "type": "boolean",
       "title": "Hide tools the user may not use",
-      "description": "Static tool mode only. After connecting, the proxy reads one record from every List tool and hides the tools for pages Business Central refuses for the signed-in user (plus their Create/Update/Delete tools). Costs one call per API page per connect; Business Central still enforces every call.",
+      "description": "Static tool mode only: hide the tools for pages you may not read (one extra read per page after connecting). Business Central still enforces every call.",
       "required": false,
       "default": false
     }

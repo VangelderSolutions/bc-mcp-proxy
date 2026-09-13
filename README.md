@@ -5,7 +5,7 @@
 [![Known Vulnerabilities](https://snyk.io/test/github/VangelderSolutions/bc-mcp-proxy/badge.svg)](https://snyk.io/test/github/VangelderSolutions/bc-mcp-proxy)
 [![Latest Release](https://img.shields.io/github/v/release/VangelderSolutions/bc-mcp-proxy)](https://github.com/VangelderSolutions/bc-mcp-proxy/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
 > **Fork of [microsoft/BCTech `samples/BcMCPProxyPython`](https://github.com/microsoft/BCTech/tree/master/samples/BcMCPProxyPython)** — a resilient Python MCP stdio proxy that bridges Claude Desktop, VS Code, Cursor and other MCP-compatible clients to the Microsoft Dynamics 365 Business Central MCP HTTP endpoint.
 >
@@ -94,7 +94,7 @@ The proxy is the translator:
 | **BC environment** | Version 28.0 or later recommended (v29 supported); v26/v27 still work on the legacy endpoint. Sandbox or production. Read-only access to all API pages works out of the box; writes need an MCP Server Configuration with **Unblock Edit Tools** on. |
 | **Microsoft Entra (Azure AD) tenant** | With **administrator** rights — you'll create an App Registration and grant API permissions. |
 | **An AI client** | Claude Desktop (free), VS Code with MCP support, Cursor, or any other stdio-MCP capable tool. |
-| **Python 3.10+** on your machine | Claude Desktop launches the proxy with the system `python3`. The `.mcpb` bundle vendors all Python dependencies internally (wheels for Python 3.10–3.14 of the host platform), so no separate `pip install` is required. |
+| **Python 3.11+** on your machine | Claude Desktop launches the proxy with the system `python3`. The `.mcpb` bundle vendors all Python dependencies internally (wheels for Python 3.11–3.14 of the host platform), so no separate `pip install` is required. |
 
 ---
 
@@ -406,7 +406,7 @@ Token cache locations (when no custom auth header is supplied):
 - **Frequent reconnects in logs.** Inspect upstream availability — the proxy logs `Upstream connection error (...); reconnecting in Xs (attempt N/M)` whenever it retries. After the configured budget the proxy gives up and the local stdio pipe closes.
 - **Repeated sign-in prompts.** The MSAL token cache may not be writable. Pass `--DeviceCacheLocation` to point at a directory you control.
 - **`AADSTS90002: Tenant '…' not found` / `Tenant ID … is not a valid GUID`.** The tenant or client ID lost a character when it was pasted (a 35-character value is the classic symptom). Since 0.8.1 the proxy checks both IDs at startup and names the problem; re-copy the value from the Entra admin center (*App registrations → Overview*).
-- **`spawn python3 ENOENT` in the Claude Desktop log (Windows).** Claude Desktop launches the extension as `python3`, so a `python3` command must resolve on `PATH`. A regular python.org install only provides `python.exe`; the Microsoft Store Python (or its *App execution alias* for `python3`, Settings → Apps → Advanced app settings → App execution aliases) provides `python3.exe`. Any Python 3.10–3.14 works; the bundle ships wheels for each.
+- **`spawn python3 ENOENT` in the Claude Desktop log (Windows).** Claude Desktop launches the extension as `python3`, so a `python3` command must resolve on `PATH`. A regular python.org install only provides `python.exe`; the Microsoft Store Python (or its *App execution alias* for `python3`, Settings → Apps → Advanced app settings → App execution aliases) provides `python3.exe`. Any Python 3.11–3.14 works; the bundle ships wheels for each.
 - **`No module named bc_mcp_proxy`.** Install the distribution into the same Python interpreter your MCP client is configured to launch (`python -m pip install --upgrade vgs-bc-mcp`). If this appeared right after you uninstalled or upgraded the old `360solutions-bc-mcp` package, that uninstall removed the shared `bc_mcp_proxy` files — restore them with `python -m pip install --force-reinstall vgs-bc-mcp`.
 
 ---
@@ -436,7 +436,7 @@ pwsh dxt/build.ps1     # Windows
 
 The output (`dist/vgs-bc-mcp-<version>-<platform>.mcpb`) installs into Claude Desktop, prompts for tenant ID / client ID / environment / company / configuration name, and runs the same proxy as the CLI version.
 
-**Self-contained bundle.** The build script vendors all Python dependencies (`mcp`, `httpx`, `msal`, plus the security-floor pins) into the bundle as wheels for Python 3.10 through 3.14 matching the host platform. Claude Desktop launches the proxy with the system `python3` and the bundled deps take precedence over anything in the system's site-packages, so no separate `pip install` is required on the install side. Each platform has its own bundle:
+**Self-contained bundle.** The build script vendors all Python dependencies (`mcp`, `httpx`, `msal`, plus the security-floor pins) into the bundle as wheels for Python 3.11 through 3.14 matching the host platform. Claude Desktop launches the proxy with the system `python3` and the bundled deps take precedence over anything in the system's site-packages, so no separate `pip install` is required on the install side. Each platform has its own bundle:
 
 | Platform | Filename pattern |
 |---|---|
