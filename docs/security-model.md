@@ -72,6 +72,8 @@ The HTTP status is 200 and the MCP result carries `isError: true`. The message i
 
 Two limits we hit while measuring: the automation API's `expandedPermissionSets` does not expose security filters (the filtered Customer line reports `readPermission: Yes` and nothing else), so filters can only be verified in the client or by reading through the API as that user; and the Permission Set page only commits a security filter when you leave the line, so verify the value after closing the card.
 
+For rolling this out across a company, including what users can change in the extension and which controls actually stop them, see [Enterprise hardening](../enterprise-hardening/).
+
 ## What the proxy adds (0.9.0)
 
 - **A permission denial is named as such.** When Business Central refuses a call for lack of permission, the proxy appends a short note to the tool result so the AI client explains "you do not have Read on TableData Customer; ask your Business Central administrator" instead of retrying or blaming configuration. Always on.
