@@ -75,6 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
       "--NoAllowCompanySwitch", action="store_false",
       dest="allow_company_switch",
       help="Keep the connection bound to the configured company.")
+  parser.add_argument(
+      "--AllowedCompanies", dest="allowed_companies",
+      help="With --AllowCompanySwitch: semicolon-separated company names a call may "
+           "be routed to (the configured company is always allowed). Default: all.")
   parser.add_argument("--Debug", action="store_true", dest="enable_debug")
   return parser
 
@@ -129,6 +133,8 @@ def parse_args(argv: list[str] | None = None) -> ProxyConfig:
       allow_company_switch=_select_bool(
           "allow_company_switch", args.allow_company_switch, env,
           defaults.allow_company_switch),
+      allowed_companies=_parse_company_list(
+          _select("allowed_companies", args.allowed_companies, env, None)),
       enable_debug=args.enable_debug or _env_flag("BC_DEBUG"),
   )
 
@@ -210,7 +216,19 @@ def _config_from_env() -> dict[str, Optional[str]]:
       "forward_resources_prompts": os.getenv("BC_FORWARD_RESOURCES_PROMPTS"),
       "hide_unauthorized_tools": os.getenv("BC_HIDE_UNAUTHORIZED_TOOLS"),
       "allow_company_switch": os.getenv("BC_ALLOW_COMPANY_SWITCH"),
+      "allowed_companies": os.getenv("BC_ALLOWED_COMPANIES"),
   }
+
+
+def _parse_company_list(value: Optional[str]) -> Optional[tuple[str, ...]]:
+  """'A; B;' -> ('A', 'B'); empty or unset -> None (no limit).
+
+  Semicolons, not commas: Business Central company names may contain commas.
+  An empty value means "not set" so a blank extension field changes nothing."""
+  if value is None:
+    return None
+  names = tuple(n.strip() for n in value.split(";") if n.strip())
+  return names or None
 
 
 def _select(

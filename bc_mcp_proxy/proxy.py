@@ -1034,12 +1034,42 @@ class _CompanySessions:
     self._tasks.clear()
 
 
-async def run_proxy(config: ProxyConfig) -> None:
-  """Run the stdio proxy until the MCP client disconnects."""
-  logger = logging.getLogger("bc_mcp_proxy")
-  if config.enable_debug:
-    logger.setLevel(logging.DEBUG)
+PrepareHook = Callable[[ProxyConfig], Awaitable[ProxyConfig]]
+"""Async callback an embedding package passes to run_proxy.
 
+It receives the configuration parsed from the command line / environment and
+returns the configuration to connect with (typically a dataclasses.replace of
+it: environment, company, configuration_name, allowed_companies, ...). It runs
+in the background after the stdio server is up, so it may take as long as it
+needs (sign-in, API calls); meanwhile tools/list answers with an empty list and
+tool calls wait. An exception becomes the error the client sees on every
+request, so raise with a message written for the end user.
+
+Fields read before prepare runs and therefore not changeable by it:
+server_name, server_version, instructions, enable_debug and
+forward_resources_prompts."""
+
+
+@dataclasses.dataclass
+class _Runtime:
+  """Everything derived from the effective (post-prepare) configuration."""
+
+  config: ProxyConfig
+  url: str
+  auth: httpx.Auth
+  registry: Optional[PermissionRegistry]
+  cache: _ToolsCache
+  directory: Optional[CompanyDirectory]
+  companies: Optional[_CompanySessions]
+  manager: _UpstreamConnectionManager
+
+
+def _build_runtime(
+    config: ProxyConfig,
+    state: _UpstreamSessionHolder,
+    notifier: _ClientNotifier,
+    logger: logging.Logger,
+) -> _Runtime:
   # Defense-in-depth: re-validate the URL at the boundary just before it's
   # handed to the HTTP client. __main__ also validates on startup, but
   # callers that construct ProxyConfig directly (tests, embedders) need
@@ -1060,7 +1090,6 @@ async def run_proxy(config: ProxyConfig) -> None:
 
   auth = _AsyncBearerAuth(token_provider)
 
-  state = _UpstreamSessionHolder()
   registry = PermissionRegistry() if config.hide_unauthorized_tools else None
   cache = _ToolsCache(
       ttl_seconds=config.tools_cache_ttl_seconds,
@@ -1068,7 +1097,6 @@ async def run_proxy(config: ProxyConfig) -> None:
       read_filter=registry.filter if registry is not None else None,
       company_switch=config.allow_company_switch,
   )
-  notifier = _ClientNotifier(logger)
   directory: Optional[CompanyDirectory] = None
   companies: Optional[_CompanySessions] = None
   if config.allow_company_switch:
@@ -1089,6 +1117,9 @@ async def run_proxy(config: ProxyConfig) -> None:
     logger.info(
         "BC_ALLOW_COMPANY_SWITCH is on: tools accept a 'company' argument and "
         "bc_list_companies lists the user's companies (default company %r)", config.company)
+    if config.allowed_companies is not None:
+      logger.info("BC_ALLOWED_COMPANIES limits the switch to: %s",
+                  ", ".join(config.allowed_companies) or "<none besides the default>")
   if registry is not None:
     logger.info(
         "BC_HIDE_UNAUTHORIZED_TOOLS is on: after each connect the proxy reads "
@@ -1106,6 +1137,68 @@ async def run_proxy(config: ProxyConfig) -> None:
         "Loaded tools/list from disk cache (%d tools)",
         len(getattr(disk_cached, "tools", []) or []),
     )
+
+  manager = _UpstreamConnectionManager(
+      state=state,
+      config=config,
+      url=url,
+      headers=headers,
+      auth=auth,
+      logger=logger,
+      tools_cache_obj=cache,
+      notifier=notifier,
+      permission_registry=registry,
+  )
+  return _Runtime(config=config, url=url, auth=auth, registry=registry, cache=cache,
+                  directory=directory, companies=companies, manager=manager)
+
+
+async def _prepare_runtime(
+    config: ProxyConfig,
+    prepare: PrepareHook,
+    state: _UpstreamSessionHolder,
+    notifier: _ClientNotifier,
+    logger: logging.Logger,
+) -> Optional[_Runtime]:
+  """Run the embedder's prepare hook, then build the runtime from its result.
+
+  Returns None after recording a sticky fatal error when either step fails,
+  so the stdio handlers surface the message instead of hanging."""
+  try:
+    prepared = await prepare(config)
+    if not isinstance(prepared, ProxyConfig):
+      raise TypeError(f"prepare returned {type(prepared).__name__}, expected ProxyConfig")
+    runtime = _build_runtime(prepared, state, notifier, logger)
+  except asyncio.CancelledError:
+    raise
+  except Exception as exc:  # noqa: BLE001 - every failure becomes the client-facing error
+    message = str(exc).strip() or f"{type(exc).__name__} while preparing the connection"
+    logger.error("Startup preparation failed: %s", message)
+    state.set_fatal(McpError(ErrorData(code=INTERNAL_ERROR, message=message)))
+    return None
+  # The client may already hold the empty placeholder list; if the prepared
+  # configuration has tools on disk, let it refetch now instead of after connect.
+  await notifier.maybe_notify(runtime.cache.get_any())
+  return runtime
+
+
+async def run_proxy(config: ProxyConfig, prepare: Optional[PrepareHook] = None) -> None:
+  """Run the stdio proxy until the MCP client disconnects.
+
+  `prepare` lets a package that embeds the proxy decide the effective
+  configuration at startup (see PrepareHook). Without it the behaviour is
+  exactly that of a plain installation."""
+  logger = logging.getLogger("bc_mcp_proxy")
+  if config.enable_debug:
+    logger.setLevel(logging.DEBUG)
+
+  state = _UpstreamSessionHolder()
+  notifier = _ClientNotifier(logger)
+  # Built up front without a hook (so configuration errors still fail the
+  # process at once, as before); built by the upstream task after the hook.
+  runtime: Optional[_Runtime] = None
+  if prepare is None:
+    runtime = _build_runtime(config, state, notifier, logger)
 
   instructions = config.instructions or (
       "Bridge MCP stdio clients to Microsoft Dynamics 365 Business Central."
@@ -1134,6 +1227,15 @@ async def run_proxy(config: ProxyConfig) -> None:
       logger.debug("Surfacing fatal upstream error on tools/list")
       raise fatal
 
+    if runtime is None:
+      # The prepare hook is still running; same answer as a cold cache.
+      logger.info("tools/list requested while the connection is being prepared; "
+                  "returning empty list and will push tools/list_changed when ready")
+      empty = ListToolsResult(tools=[])
+      notifier.record_served(empty)
+      return empty
+    cache, config_now = runtime.cache, runtime.config
+
     fresh = cache.get_fresh()
     if fresh is not None:
       logger.debug("Serving tools/list from cache")
@@ -1147,7 +1249,7 @@ async def run_proxy(config: ProxyConfig) -> None:
       logger.debug("Serving stale tools/list; refreshing in background")
       notifier.record_served(stale)
       asyncio.create_task(
-          _refresh_tools_cache(state, cache, config, logger, notifier))
+          _refresh_tools_cache(state, cache, config_now, logger, notifier))
       return stale
 
     # Nothing cached (cold first run, auth almost certainly still pending).
@@ -1165,6 +1267,13 @@ async def run_proxy(config: ProxyConfig) -> None:
 
   @server.call_tool()
   async def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
+    if runtime is None:
+      # Waits out the prepare hook: returns once the default session is up,
+      # raises its error if preparation failed.
+      await state.wait_active()
+    assert runtime is not None
+    config, manager, registry, cache = runtime.config, runtime.manager, runtime.registry, runtime.cache
+    directory, companies = runtime.directory, runtime.companies
     company: Optional[str] = None
     holder, target_manager = state, manager
     if directory is not None and companies is not None:
@@ -1175,6 +1284,10 @@ async def run_proxy(config: ProxyConfig) -> None:
         resolved, known = await directory.resolve(requested)
         if resolved is None:
           names = ", ".join(sorted(c.name for c in known))
+          if config.allowed_companies is not None:
+            return company_error(
+                f"Company '{requested}' is not available for this connection in environment "
+                f"'{config.environment}'. Companies: {names}.")
           return company_error(
               f"Company '{requested}' does not exist in environment "
               f"'{config.environment}'. Companies: {names}.")
@@ -1229,9 +1342,15 @@ async def run_proxy(config: ProxyConfig) -> None:
       )
     return annotated
 
+  def _current_manager() -> _UpstreamConnectionManager:
+    # Only reached once a session exists, and a session exists only after
+    # the runtime was built.
+    assert runtime is not None
+    return runtime.manager
+
   if config.forward_resources_prompts:
     _register_resource_and_prompt_handlers(
-        server, state, lambda: manager, logger)
+        server, state, _current_manager, logger)
 
   # Advertise tools.listChanged so the client honours the
   # notifications/tools/list_changed we push after a cold-start auth.
@@ -1240,33 +1359,34 @@ async def run_proxy(config: ProxyConfig) -> None:
   init_options = server.create_initialization_options(
       NotificationOptions(tools_changed=True))
 
-  manager = _UpstreamConnectionManager(
-      state=state,
-      config=config,
-      url=url,
-      headers=headers,
-      auth=auth,
-      logger=logger,
-      tools_cache_obj=cache,
-      notifier=notifier,
-      permission_registry=registry,
-  )
+  async def _run_upstream() -> None:
+    nonlocal runtime
+    if runtime is None:
+      assert prepare is not None
+      runtime = await _prepare_runtime(config, prepare, state, notifier, logger)
+      if runtime is None:
+        # Like a permanent rejection: stay up so the client sees the error.
+        await asyncio.Event().wait()
+        return  # pragma: no cover - only on cancellation, which re-raises
+    await runtime.manager.run()
 
   async with stdio_server() as (local_read, local_write):
-    upstream_task = asyncio.create_task(manager.run(), name="bc-mcp-upstream")
+    upstream_task = asyncio.create_task(_run_upstream(), name="bc-mcp-upstream")
     server_task = asyncio.create_task(
         server.run(local_read, local_write, init_options),
         name="bc-mcp-stdio-server",
     )
-    done, pending = await asyncio.wait(
-        {upstream_task, server_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for task in pending:
-      task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
-    if companies is not None:
-      await companies.close()
+    tasks = {upstream_task, server_task}
+    try:
+      done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+      # Also on cancellation of run_proxy itself (an embedder stopping it).
+      pending = [task for task in tasks if not task.done()]
+      for task in pending:
+        task.cancel()
+      await asyncio.gather(*pending, return_exceptions=True)
+      if runtime is not None and runtime.companies is not None:
+        await runtime.companies.close()
     for task in done:
       task.result()  # re-raise upstream/server failures
 
@@ -1473,9 +1593,9 @@ def _build_endpoint_url(config: ProxyConfig, base_url_override: Optional[str] = 
   return f"{base}/v2.0/{config.environment}/mcp"
 
 
-def run_sync(config: ProxyConfig) -> None:
+def run_sync(config: ProxyConfig, prepare: Optional[PrepareHook] = None) -> None:
   """Helper to run the proxy from synchronous entry points."""
-  asyncio.run(run_proxy(config))
+  asyncio.run(run_proxy(config, prepare))
 
 
 def _env_flag(name: str) -> bool:

@@ -187,6 +187,12 @@ class ProxyConfig:
   # enforces per-company permissions either way.
   # BC_ALLOW_COMPANY_SWITCH=1 / --AllowCompanySwitch enables it.
   allow_company_switch: bool = False
+  # With the company switch on: the companies (API name or display name) a
+  # call may be routed to. None = every company of the environment. The
+  # configured `company` stays reachable either way. Like the switch itself
+  # a convenience limit, not a security boundary.
+  # BC_ALLOWED_COMPANIES="A;B" / --AllowedCompanies "A;B" sets it.
+  allowed_companies: Optional[tuple[str, ...]] = None
   # Persistent on-disk tools/list cache TTL.
   tools_disk_cache_ttl_seconds: float = 24 * 60 * 60
 
