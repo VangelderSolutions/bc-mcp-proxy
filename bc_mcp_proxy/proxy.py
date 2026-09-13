@@ -1176,8 +1176,8 @@ async def run_proxy(config: ProxyConfig) -> None:
         if resolved is None:
           names = ", ".join(sorted(c.name for c in known))
           return company_error(
-              f"Company '{requested}' is not available to the signed-in user in environment "
-              f"'{config.environment}'. Available: {names}.")
+              f"Company '{requested}' does not exist in environment "
+              f"'{config.environment}'. Companies: {names}.")
         company = resolved
         holder, target_manager = companies.get_or_start(company)
     logger.debug("Calling tool '%s' (company %s, session %s)", name,

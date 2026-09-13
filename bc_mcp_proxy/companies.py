@@ -9,8 +9,8 @@ settings, the proxy (when `allow_company_switch` is on):
 * adds an optional `company` argument to every forwarded tool, and routes a
   call that carries one to an upstream session opened for that company;
 * adds one proxy-native tool, `bc_list_companies`, that lists the companies
-  the signed-in user can open (Business Central's standard `companies` API,
-  called with the user's own token);
+  of the environment (Business Central's standard `companies` API, called
+  with the user's own token; it lists every company, permission or not);
 * never widens what the user may do: Business Central assigns permission
   sets per company and refuses calls in a company the user lacks rights in,
   which surfaces through the usual permission note.
@@ -67,7 +67,7 @@ def parse_companies(payload: Any) -> list[Company]:
 
 
 class CompanyDirectory:
-  """The companies the signed-in user can open, fetched once and kept.
+  """The companies of the environment, fetched once and kept.
 
   A miss (an unknown name) triggers one refresh, so a company created after
   the proxy started is still found. When the API cannot be read (no token
@@ -104,7 +104,7 @@ class CompanyDirectory:
                                     headers={"Authorization": f"Bearer {token}"})
       response.raise_for_status()
       companies = parse_companies(response.json())
-      self._logger.info("Company directory: %d company(ies) available to the signed-in user", len(companies))
+      self._logger.info("Company directory: %d company(ies) in the environment", len(companies))
       return companies
     except Exception as exc:  # noqa: BLE001 - the directory is best-effort
       self._logger.warning(
@@ -134,8 +134,9 @@ class CompanyDirectory:
       return (f"The company list could not be read from Business Central. The configured "
               f"company is '{default}'; other companies can be tried by name with the "
               f"'{COMPANY_ARGUMENT}' argument and Business Central will accept or refuse them.")
-    lines = [f"Companies in environment '{self._config.environment}' available to the signed-in user "
-             f"(pass the name as the '{COMPANY_ARGUMENT}' argument of any tool):"]
+    lines = [f"Companies in environment '{self._config.environment}' (pass the name as the "
+             f"'{COMPANY_ARGUMENT}' argument of any tool; Business Central decides per company "
+             f"whether the signed-in user may work in it):"]
     for c in sorted(companies, key=lambda c: c.name.lower()):
       marker = " (default for this connection)" if c.name == default else ""
       shown = f"{c.name}" + (f" -- {c.display_name}" if c.display_name and c.display_name != c.name else "")
@@ -160,9 +161,10 @@ def list_companies_tool() -> Tool:
   return Tool(
       name=LIST_COMPANIES_TOOL,
       title="List Business Central companies",
-      description=("List the Business Central companies the signed-in user can work in, and which "
-                   f"one is the default for this connection. Pass a company name as the "
-                   f"'{COMPANY_ARGUMENT}' argument of any other tool to run it there."),
+      description=("List the companies of the Business Central environment and which one is the "
+                   f"default for this connection. Pass a company name as the '{COMPANY_ARGUMENT}' "
+                   "argument of any other tool to run it there; Business Central refuses companies "
+                   "the signed-in user has no permissions in."),
       inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
       annotations=ToolAnnotations(title="List Business Central companies", readOnlyHint=True,
                                   destructiveHint=False, idempotentHint=True, openWorldHint=False),

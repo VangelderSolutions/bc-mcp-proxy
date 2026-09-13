@@ -142,7 +142,7 @@
     "allow_company_switch": {
       "type": "boolean",
       "title": "Allow switching company",
-      "description": "Let Claude run a call in another company of the same environment through a 'company' argument, and list your companies with bc_list_companies. Business Central still enforces your permissions per company.",
+      "description": "Let Claude run a call in another company of the same environment through a 'company' argument, and list the environment's companies with bc_list_companies. Business Central still enforces your permissions per company.",
       "required": false,
       "default": false
     }
@@ -151,7 +151,7 @@
     { "name": "bc_actions_search", "description": "Search the Business Central actions (API pages and operations) available to the signed-in user. Read-only." },
     { "name": "bc_actions_describe", "description": "Describe one Business Central action: its parameters, filters and the operations it allows. Read-only." },
     { "name": "bc_actions_invoke", "description": "Invoke a Business Central action: read records, or create / update / delete / post when the MCP configuration allows writes. Treated as destructive." },
-    { "name": "bc_list_companies", "description": "List the Business Central companies the signed-in user can work in (only when switching company is allowed). Read-only." }
+    { "name": "bc_list_companies", "description": "List the companies of the Business Central environment (only when switching company is allowed). Read-only." }
   ],
   "tools_generated": true
 }
