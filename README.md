@@ -358,7 +358,7 @@ Only the legacy `api.` host gets the legacy shape; any other `*.businesscentral.
 
 ### Embedding the proxy
 
-A package that builds on the proxy can decide the effective configuration at startup by passing an async hook: `run_proxy(config, prepare=my_prepare)` (or `run_sync(config, prepare=...)`). `prepare(config)` receives the parsed configuration and returns the one to connect with, typically `dataclasses.replace(config, environment=..., company=..., configuration_name=..., allowed_companies=...)`. It runs after the stdio server is up, so it may sign in or call APIs without tripping the client's request timeout: meanwhile `tools/list` answers with an empty list (followed by `tools/list_changed`) and tool calls wait. An exception becomes the error the client sees, so raise with a message meant for the end user. `server_name`, `server_version`, `instructions`, `enable_debug` and `forward_resources_prompts` are read before the hook runs and cannot be changed by it. Without a hook nothing changes.
+A package that builds on the proxy can decide the effective configuration at startup by passing an async hook: `run_proxy(config, prepare=my_prepare)` (or `run_sync(config, prepare=...)`). `prepare(config)` receives the parsed configuration and returns the one to connect with, typically `dataclasses.replace(config, environment=..., company=..., configuration_name=..., allowed_companies=...)`. It runs after the stdio server is up, so it may sign in or call APIs without tripping the client's request timeout: meanwhile the first `tools/list` waits up to `initial_tools_wait_seconds` (10 s) for the prepared tool list and otherwise answers with an empty list (followed by `tools/list_changed`), and tool calls wait. An exception becomes the error the client sees, so raise with a message meant for the end user. `server_name`, `server_version`, `instructions`, `enable_debug` and `forward_resources_prompts` are read before the hook runs and cannot be changed by it. Without a hook nothing changes.
 
 For another transport, or several users behind one process (a hosted server for Claude.ai and Claude mobile), the same core is available as building blocks (0.11): `build_server(config, resolve, logger)` builds the MCP `Server` whose handlers serve the `RuntimeSlot` that the async `resolve()` returns; it is called on every request, inside the request context, so a hosted server can pick the slot of the authenticated user. `run_slot_upstream(slot, config, prepare, logger, options)` prepares one slot (through the hook) and runs its upstream connection until cancelled; `close_slot(slot)` closes its per-company sessions. `RuntimeOptions` supplies the token providers (instead of the MSAL sign-in of the user running the process) and turns off the on-disk tools cache, which is keyed per tenant/environment/company/configuration and not per user. `run_proxy` is exactly `build_server` with one slot plus stdio, so the stdio behaviour is unchanged.
 
@@ -371,6 +371,8 @@ BC's MCP endpoint can take 30s+ to answer the very first `tools/list` call after
 3. The stdio handler answers from the in-memory cache (5-minute TTL) instead of round-tripping to BC on every call.
 
 The very first install on a freshly cold-started BC environment may still hit the 30s timeout once — there is no disk cache yet to fall back on. Every subsequent launch is instant.
+
+When nothing is cached yet, the first `tools/list` of a connection waits up to 10 seconds for the tool list (`BC_INITIAL_TOOLS_WAIT_SECONDS` / `--InitialToolsWaitSeconds`) and only then answers with an empty list, followed by `tools/list_changed` once the tools arrive. Claude Desktop marks a server whose first answer is empty as offering no tools to Cowork and Code sessions, even though the tools follow seconds later. The wait happens once per connection: later requests answer at once.
 
 ---
 
@@ -394,6 +396,7 @@ The very first install on a freshly cold-started BC environment may still hit th
 | Allowed Companies   | `--AllowedCompanies`   | `BC_ALLOWED_COMPANIES`   | unset (all) — with the company switch: semicolon-separated companies a call may use; the configured company is always allowed |
 | HTTP Timeout (s)    | `--HttpTimeoutSeconds` | `BC_HTTP_TIMEOUT_SECONDS`| `120.0`                                                       |
 | SSE Timeout (s)     | `--SseTimeoutSeconds`  | `BC_SSE_TIMEOUT_SECONDS` | `300.0`                                                       |
+| Initial Tools Wait (s) | `--InitialToolsWaitSeconds` | `BC_INITIAL_TOOLS_WAIT_SECONDS` | `10.0` — once per connection, how long the first `tools/list` waits for the tool list before answering empty; `0` answers at once |
 | Log Level           | `--LogLevel`           | `BC_LOG_LEVEL`           | `INFO`                                                        |
 | Debug               | `--Debug`              | `BC_DEBUG=1`             | off                                                           |
 
