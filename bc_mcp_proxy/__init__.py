@@ -61,8 +61,19 @@ _add_bundled_wheels_to_path()
 
 from ._version import __version__  # noqa: E402, F401
 from .config import ProxyConfig  # noqa: E402, F401
-from .proxy import run_proxy  # noqa: E402, F401
+from .proxy import (  # noqa: E402, F401
+    RuntimeOptions,
+    RuntimeResolver,
+    RuntimeSlot,
+    build_server,
+    close_slot,
+    run_proxy,
+    run_slot_upstream,
+)
 
-__all__ = ["ProxyConfig", "run_proxy", "__version__"]
+__all__ = [
+    "ProxyConfig", "run_proxy", "__version__",
+    "build_server", "RuntimeSlot", "RuntimeOptions", "RuntimeResolver", "run_slot_upstream", "close_slot",
+]
 
 
