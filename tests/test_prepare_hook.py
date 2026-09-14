@@ -99,7 +99,9 @@ async def test_prepare_changes_the_config_before_the_connection_is_built(harness
     await release.wait()
     return dataclasses.replace(config, company="Demo Nutrisan", configuration_name="Sales")
 
-  async with run(ProxyConfig(company="CRONUS BE"), prepare) as client:
+  # No first-list wait: this test holds preparation open on purpose (the wait
+  # itself is covered in test_first_tools_wait.py).
+  async with run(ProxyConfig(company="CRONUS BE", initial_tools_wait_seconds=0), prepare) as client:
     # Still preparing: nothing built, an empty list rather than a hang.
     assert (await client.list_tools()).tools == []
     assert built == []
@@ -138,7 +140,9 @@ async def test_prepare_must_return_a_proxy_config() -> None:
 
 async def test_without_prepare_the_runtime_is_built_before_serving(harness) -> None:
   run, built = harness
-  async with run(ProxyConfig(company="CRONUS BE"), None) as client:
+  # The SDK client lists tools inside call_tool (output validation) and this fake
+  # upstream never pre-warms the cache, so skip the first-list wait here.
+  async with run(ProxyConfig(company="CRONUS BE", initial_tools_wait_seconds=0), None) as client:
     assert [c.company for c in built] == ["CRONUS BE"]
     result = await asyncio.wait_for(client.call_tool("List_Customers_PAG30009", {}), 5)
     assert result.content[0].text == "List_Customers_PAG30009 in CRONUS BE"

@@ -35,6 +35,10 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--LogLevel", dest="log_level")
   parser.add_argument("--HttpTimeoutSeconds", type=float, dest="http_timeout_seconds")
   parser.add_argument("--SseTimeoutSeconds", type=float, dest="sse_timeout_seconds")
+  parser.add_argument(
+      "--InitialToolsWaitSeconds", type=float, dest="initial_tools_wait_seconds",
+      help="How long the first tools/list may wait for the tool list while the connection "
+           "starts before it answers with an empty list (default: 10; 0 answers at once).")
   parser.add_argument("--DeviceCacheLocation", dest="device_cache_location")
   parser.add_argument("--DeviceCacheName", dest="device_cache_name")
   parser.add_argument(
@@ -116,6 +120,9 @@ def parse_args(argv: list[str] | None = None) -> ProxyConfig:
           "http_timeout_seconds", args.http_timeout_seconds, env, defaults.http_timeout_seconds),
       sse_timeout_seconds=_select_float(
           "sse_timeout_seconds", args.sse_timeout_seconds, env, defaults.sse_timeout_seconds),
+      initial_tools_wait_seconds=_select_float(
+          "initial_tools_wait_seconds", args.initial_tools_wait_seconds, env,
+          defaults.initial_tools_wait_seconds),
       device_cache_location=_select(
           "device_cache_location", args.device_cache_location, env, defaults.device_cache_location),
       device_cache_name=_select(
@@ -208,6 +215,7 @@ def _config_from_env() -> dict[str, Optional[str]]:
       "instructions": os.getenv("BC_INSTRUCTIONS"),
       "http_timeout_seconds": os.getenv("BC_HTTP_TIMEOUT_SECONDS"),
       "sse_timeout_seconds": os.getenv("BC_SSE_TIMEOUT_SECONDS"),
+      "initial_tools_wait_seconds": os.getenv("BC_INITIAL_TOOLS_WAIT_SECONDS"),
       "device_cache_location": os.getenv("BC_DEVICE_CACHE_LOCATION"),
       "device_cache_name": os.getenv("BC_DEVICE_CACHE_NAME"),
       "auth_mode": os.getenv("BC_AUTH_MODE"),

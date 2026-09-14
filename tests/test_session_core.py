@@ -74,7 +74,7 @@ async def test_the_resolver_picks_the_slot_of_each_request() -> None:
   async def resolve() -> proxy.RuntimeSlot:
     return slots[current["user"]]
 
-  server, init_options = proxy.build_server(ProxyConfig(), resolve, LOGGER)
+  server, init_options = proxy.build_server(ProxyConfig(initial_tools_wait_seconds=0.2), resolve, LOGGER)
   tasks = [asyncio.create_task(proxy.run_slot_upstream(s, s.runtime.config, None, LOGGER))  # type: ignore[union-attr]
            for s in slots.values()]
   try:
@@ -84,7 +84,8 @@ async def test_the_resolver_picks_the_slot_of_each_request() -> None:
       current["user"] = "bob"
       result = await asyncio.wait_for(client.call_tool("List_Customers_PAG30009", {}), 5)
       assert result.content[0].text == "List_Customers_PAG30009 for bob"
-      # tools/list serves the cache of the resolved slot: bob's is cold, so empty and no hang.
+      # tools/list serves the cache of the resolved slot: bob's stays cold (the fake
+      # upstream never pre-warms), so empty after the short first-list wait, no hang.
       assert (await asyncio.wait_for(client.list_tools(), 5)).tools == []
   finally:
     for task in tasks:

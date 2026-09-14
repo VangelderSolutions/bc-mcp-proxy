@@ -1099,6 +1099,10 @@ class RuntimeSlot:
   state: _UpstreamSessionHolder
   notifier: _ClientNotifier
   runtime: Optional[_Runtime] = None
+  # End (event-loop time) of the one bounded wait for the first tool list,
+  # set by the slot's first tools/list that finds nothing (see
+  # _wait_for_first_tools). Later requests share it and never extend it.
+  first_tools_deadline: Optional[float] = None
 
   def get_manager(self) -> _UpstreamConnectionManager:
     """The default upstream manager; only called once a session exists, which
@@ -1111,6 +1115,39 @@ RuntimeResolver = Callable[[], Awaitable[RuntimeSlot]]
 """Called at the start of every MCP request handler and returns the slot the
 request belongs to. It runs inside the request context, so a hosted server can
 look at `server.request_context` (the authenticated HTTP user) to pick it."""
+
+_FIRST_TOOLS_POLL_SECONDS = 0.1
+
+
+def _slot_has_tools(slot: RuntimeSlot) -> bool:
+  return slot.runtime is not None and slot.runtime.cache.get_any() is not None
+
+
+async def _wait_for_first_tools(slot: RuntimeSlot, seconds: float) -> float:
+  """Wait for the slot's first tool list (or its fatal error), within one window.
+
+  Answering the first tools/list with an empty placeholder is valid MCP, since
+  tools/list_changed follows, but some clients judge a server by that first
+  answer (Claude Desktop marks it as offering no tools to Cowork and Code
+  sessions). The prepare hook, the disk cache or the upstream pre-warm usually
+  delivers the list within seconds. The window opens at the slot's first
+  tools/list that finds nothing and lasts `seconds`; requests after it answer
+  at once, so a cache that stays empty (a failed pre-warm) or a client that
+  lists tools on every call (the MCP Python SDK validates call results that
+  way) never waits twice, and a Business Central cold start still cannot run
+  a request into the client's timeout. Returns the seconds waited."""
+  if seconds <= 0 or slot.state.fatal is not None or _slot_has_tools(slot):
+    return 0.0
+  loop = asyncio.get_running_loop()
+  started = loop.time()
+  if slot.first_tools_deadline is None:
+    slot.first_tools_deadline = started + seconds
+  while slot.state.fatal is None and not _slot_has_tools(slot):
+    remaining = slot.first_tools_deadline - loop.time()
+    if remaining <= 0:
+      break
+    await asyncio.sleep(min(_FIRST_TOOLS_POLL_SECONDS, remaining))
+  return loop.time() - started
 
 
 def _build_runtime(
@@ -1250,8 +1287,9 @@ def build_server(
   keeps one slot per authenticated user and resolves on the request context.
   Returns the server and its initialization options (tools.listChanged on).
   Fields read here and therefore fixed per server: server_name, server_version,
-  instructions and forward_resources_prompts."""
+  instructions, forward_resources_prompts and initial_tools_wait_seconds."""
   logger = logger or logging.getLogger("bc_mcp_proxy")
+  first_tools_wait = max(0.0, config.initial_tools_wait_seconds)
   instructions = config.instructions or (
       "Bridge MCP stdio clients to Microsoft Dynamics 365 Business Central."
       " All tool definitions and executions are forwarded to the configured Business"
@@ -1265,7 +1303,7 @@ def build_server(
   @server.list_tools()
   async def _list_tools() -> Any:
     slot = await resolve()
-    state, notifier, runtime = slot.state, slot.notifier, slot.runtime
+    state, notifier = slot.state, slot.notifier
     # Capture the live ServerSession so the background upstream pre-warm
     # can push tools/list_changed once auth completes. request_context is
     # only valid inside a request — which this always is.
@@ -1273,6 +1311,11 @@ def build_server(
       notifier.capture(server.request_context.session)
     except LookupError:  # pragma: no cover - defensive; always in a request here
       pass
+
+    # A starting connection gets a bounded moment to deliver its first list
+    # (ProxyConfig.initial_tools_wait_seconds); no-op once tools are cached.
+    waited = await _wait_for_first_tools(slot, first_tools_wait)
+    runtime = slot.runtime
 
     fatal = state.fatal
     if fatal is not None:
@@ -1283,8 +1326,8 @@ def build_server(
 
     if runtime is None:
       # The prepare hook is still running; same answer as a cold cache.
-      logger.info("tools/list requested while the connection is being prepared; "
-                  "returning empty list and will push tools/list_changed when ready")
+      logger.info("tools/list requested while the connection is being prepared; returning empty "
+                  "list after waiting %.1f s and will push tools/list_changed when ready", waited)
       empty = ListToolsResult(tools=[])
       notifier.record_served(empty)
       return empty
@@ -1309,13 +1352,13 @@ def build_server(
 
     # Nothing cached (cold first run, auth almost certainly still pending).
     # Do NOT block on the upstream session here — that is exactly what made
-    # the first tools/list hang past Claude's ~30s request timeout. Return
-    # an empty list immediately; the upstream pre-warm task will populate
-    # the cache and push notifications/tools/list_changed so the client
-    # refetches and the tools appear, with no restart.
+    # the first tools/list hang past Claude's ~30s request timeout. After the
+    # bounded wait above, return an empty list; the upstream pre-warm task will
+    # populate the cache and push notifications/tools/list_changed so the
+    # client refetches and the tools appear, with no restart.
     logger.info(
-        "tools/list requested before upstream is ready; returning empty list "
-        "and will push tools/list_changed once authentication completes")
+        "tools/list requested before upstream is ready; returning empty list after waiting "
+        "%.1f s and will push tools/list_changed once authentication completes", waited)
     empty = ListToolsResult(tools=[])
     notifier.record_served(empty)
     return empty

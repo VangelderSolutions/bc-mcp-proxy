@@ -165,6 +165,14 @@ class ProxyConfig:
 
   # tools/list cache TTL — reduces round-trips and masks BC cold-starts.
   tools_cache_ttl_seconds: float = 300.0
+  # How long a tools/list may wait for the first tool list while the
+  # connection starts (prepare hook, disk cache, upstream pre-warm) before it
+  # answers with an empty list and relies on tools/list_changed. Some clients
+  # judge a server by that first answer: Claude Desktop marks one that answers
+  # empty as offering no tools to Cowork and Code sessions. Keep it well below
+  # the client's request timeout (~30 s in Claude Desktop); 0 answers at once.
+  # BC_INITIAL_TOOLS_WAIT_SECONDS / --InitialToolsWaitSeconds sets it.
+  initial_tools_wait_seconds: float = 10.0
   # Fill in `title` and readOnlyHint/destructiveHint on forwarded tools that
   # lack them, keyed on BC's documented tool naming. Lets Claude auto-approve
   # read-only tools and always confirm writes; required for directory
