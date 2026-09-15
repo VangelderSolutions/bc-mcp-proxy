@@ -152,7 +152,7 @@ async def test_describe_marks_the_default_company() -> None:
   assert '- CRONUS BE (display name "Vangelder Solutions BV"; default for this connection)' in text
   assert "- Demo Nutrisan\n" in text and "- My Company" in text
   assert "or its display name" in text
-  assert "not available for this connection because" not in text  # no limit configured
+  assert "may contain other companies" not in text  # no limit configured
 
 
 async def test_directory_without_token_provider_is_empty_and_describe_says_so() -> None:
