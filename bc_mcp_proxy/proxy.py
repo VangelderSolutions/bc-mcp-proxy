@@ -40,6 +40,7 @@ import os
 from . import tools_cache
 from .auth import TokenProvider, create_token_provider
 from .companies import (
+    LIMITED_REASON,
     LIST_COMPANIES_TOOL,
     CompanyDirectory,
     add_company_switch,
@@ -1387,9 +1388,9 @@ def build_server(
           names = ", ".join(sorted(c.name for c in known))
           if config.allowed_companies is not None:
             return company_error(
-                f"Company '{requested}' is not available for this connection in environment "
-                f"'{config.environment}': an administrator limited the companies this connection "
-                f"may use (the company may still exist in the environment). Available: {names}.")
+                f"Company '{requested}' is not available for this connection, which is "
+                f"{LIMITED_REASON}; the company may still exist in environment "
+                f"'{config.environment}'. Available: {names}.")
           return company_error(
               f"Company '{requested}' does not exist in environment "
               f"'{config.environment}'. Companies: {names}.")

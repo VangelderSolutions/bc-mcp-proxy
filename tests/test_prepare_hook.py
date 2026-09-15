@@ -23,7 +23,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from bc_mcp_proxy import proxy
 from bc_mcp_proxy.__main__ import _parse_company_list, parse_args
-from bc_mcp_proxy.companies import Company, CompanyDirectory, parse_companies
+from bc_mcp_proxy.companies import LIMITED_REASON, Company, CompanyDirectory, parse_companies
 from bc_mcp_proxy.config import ProxyConfig
 
 API_PAYLOAD = {"value": [
@@ -180,6 +180,9 @@ async def test_allowed_companies_filters_the_listing() -> None:
   # A limited list must not read as the environment's full list (a client then
   # claims a company "does not exist" when it is only not allowed).
   assert "may contain other companies" in text and "rather than that it does not exist" in text
+  # The proxy cannot tell who limited the list (an administrator's rule, or
+  # only the user's own permissions), so the note must not name an administrator.
+  assert LIMITED_REASON in text and "administrator" not in text
   assert '- CRONUS BE (display name "Vangelder Solutions BV"; default for this connection)' in text
 
 
@@ -190,6 +193,33 @@ async def test_allowed_companies_without_a_readable_directory_only_passes_listed
   text = await d.describe()
   assert "- CRONUS BE (default for this connection)" in text and "- Demo Nutrisan" in text
   assert "may contain other companies" in text
+
+
+async def test_a_call_in_a_company_outside_allowed_companies_is_not_available(
+    harness, monkeypatch: pytest.MonkeyPatch) -> None:
+  run, _ = harness
+
+  def no_session(company: str):
+    raise AssertionError(f"no upstream session may open for {company!r}")
+
+  def build_with_directory(config, state, notifier, logger):
+    return proxy._Runtime(
+        config=config, url="https://example.invalid", auth=None, registry=None,  # type: ignore[arg-type]
+        cache=proxy._ToolsCache(ttl_seconds=60.0), directory=_Directory(config, API_PAYLOAD),
+        companies=proxy._CompanySessions("CRONUS BE", no_session, logger),
+        manager=_FakeManager(state, config))  # type: ignore[arg-type]
+
+  monkeypatch.setattr(proxy, "_build_runtime", build_with_directory)
+  config = dataclasses.replace(_cfg(("Demo Nutrisan",)), initial_tools_wait_seconds=0)
+  async with run(config, None) as client:
+    result = await asyncio.wait_for(
+        client.call_tool("List_Customers_PAG30009", {"company": "My Company"}), 5)
+  text = result.content[0].text
+  assert result.isError and text.startswith("Company 'My Company' is not available for this connection")
+  # An embedding package may keep only the companies the user has permissions
+  # in: no administrator, and no claim that the company does not exist.
+  assert LIMITED_REASON in text and "administrator" not in text and "does not exist" not in text
+  assert text.endswith("Available: CRONUS BE, Demo Nutrisan.")
 
 
 async def test_no_allowed_companies_keeps_the_existing_behaviour() -> None:

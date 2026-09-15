@@ -46,9 +46,15 @@ _COMPANY_ARGUMENT_SCHEMA: dict[str, Any] = {
 _STANDARD_API_HOST = f"https://{LEGACY_HOST}"
 # Without this, a client reads the limited list as the environment's full list
 # and tells the user a company "does not exist" when it is only not allowed.
+# The proxy does not know who limited the list: the installation's own
+# setting, an administrator's rule, or an embedding package that keeps only
+# the companies the user has permissions in. So the text names both causes
+# (a client told users "an administrator limited the choice" when only their
+# own permissions did).
+LIMITED_REASON = "limited by its settings or by the signed-in user's permissions"
 _LIMITED_NOTE = ("The environment may contain other companies; they are not available for this "
-                 "connection because an administrator limited the choice. Say that a company is "
-                 "not available here rather than that it does not exist.")
+                 f"connection, which is {LIMITED_REASON}. Say that a company is not available "
+                 "here rather than that it does not exist.")
 
 
 @dataclass(frozen=True)
