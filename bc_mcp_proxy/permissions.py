@@ -30,12 +30,13 @@ This module gives the proxy two things:
   Central stays the enforcer; hiding is a courtesy to the client, never a
   security boundary.
 * `read_guard_permissions`: when the environment runs the companion app
-  MCP Guard (Vangelder Solutions, free on AppSource), its
+  MCP Guard (Vangelder Solutions, licensed per user), its
   `effectivePermissions` API page answers the same question in one call
   and also knows about write permissions and page Execute, so the write
   tools can be hidden per operation. The guard sees empty tables the user
   may not read (a probe cannot); it does not see tables a page reads in code
-  besides its source table, so a live denial still hides a page.
+  besides its source table, so a live denial still hides a page. Users
+  without an MCP Guard licence are refused the page; the probe runs instead.
 """
 
 from __future__ import annotations
