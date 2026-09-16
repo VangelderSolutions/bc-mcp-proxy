@@ -196,7 +196,7 @@ async def test_allowed_companies_without_a_readable_directory_only_passes_listed
 
 
 async def test_a_call_in_a_company_outside_allowed_companies_is_not_available(
-    harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
   run, _ = harness
 
   def no_session(company: str):
@@ -211,15 +211,26 @@ async def test_a_call_in_a_company_outside_allowed_companies_is_not_available(
 
   monkeypatch.setattr(proxy, "_build_runtime", build_with_directory)
   config = dataclasses.replace(_cfg(("Demo Nutrisan",)), initial_tools_wait_seconds=0)
-  async with run(config, None) as client:
-    result = await asyncio.wait_for(
-        client.call_tool("List_Customers_PAG30009", {"company": "My Company"}), 5)
+  with caplog.at_level(logging.WARNING, logger="bc_mcp_proxy"):
+    async with run(config, None) as client:
+      result = await asyncio.wait_for(
+          client.call_tool("List_Customers_PAG30009", {"company": "My Company"}), 5)
   text = result.content[0].text
   assert result.isError and text.startswith("Company 'My Company' is not available for this connection")
   # An embedding package may keep only the companies the user has permissions
   # in: no administrator, and no claim that the company does not exist.
   assert LIMITED_REASON in text and "administrator" not in text and "does not exist" not in text
   assert text.endswith("Available: CRONUS BE, Demo Nutrisan.")
+  # The server has to show the refusal too. Without it, "the client never asked"
+  # and "the proxy said no" are indistinguishable in the log afterwards.
+  assert any("Refused a call" in r.getMessage() and "My Company" in r.getMessage()
+             for r in caplog.records)
+
+
+def test_a_refusal_without_a_logger_is_still_returned() -> None:
+  """company_error is part of the embedding surface; the logger is optional."""
+  from bc_mcp_proxy.companies import company_error
+  assert company_error("Company 'X' is not available.").isError
 
 
 async def test_no_allowed_companies_keeps_the_existing_behaviour() -> None:

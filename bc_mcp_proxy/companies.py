@@ -356,5 +356,14 @@ def _pop(arguments: Optional[dict[str, Any]], key: str) -> tuple[Optional[str], 
   return None, args
 
 
-def company_error(message: str) -> CallToolResult:
+def company_error(message: str, logger: Optional[logging.Logger] = None) -> CallToolResult:
+  """The refusal the client sees, logged as well when a logger is given.
+
+  Without the log line a refused company or environment leaves no trace on the
+  server, so "the client never asked" and "the proxy said no" look identical
+  afterwards -- which is exactly the question you have when a connection seems
+  to be serving a stale list.
+  """
+  if logger is not None:
+    logger.warning("Refused a call: %s", message)
   return CallToolResult(content=[TextContent(type="text", text=message)], isError=True)
