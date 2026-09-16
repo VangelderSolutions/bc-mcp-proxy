@@ -1570,7 +1570,7 @@ def build_server(
                 f"Environment '{wanted_environment}' is not available for this connection. "
                 f"Available: {', '.join(environments.names)}. The environment may still exist "
                 "in Business Central; this connection reaches the ones listed by "
-                f"{LIST_COMPANIES_TOOL}.")
+                f"{LIST_COMPANIES_TOOL}.", logger)
           environment = resolved_environment
           directory = environments.directory(environment)
           target_config = directory.config
@@ -1586,10 +1586,10 @@ def build_server(
             return company_error(
                 f"Company '{requested}' is not available for this connection, which is "
                 f"{LIMITED_REASON}; the company may still exist in environment "
-                f"'{target_config.environment}'. Available: {names}.")
+                f"'{target_config.environment}'. Available: {names}.", logger)
           return company_error(
               f"Company '{requested}' does not exist in environment "
-              f"'{target_config.environment}'. Companies: {names}.")
+              f"'{target_config.environment}'. Companies: {names}.", logger)
         company = resolved
       if environment is not None and not company:
         # Business Central refuses a session without a Company header, and the
@@ -1597,7 +1597,7 @@ def build_server(
         return company_error(
             f"Environment '{environment}' has no default company for this connection, so the "
             f"call needs a '{COMPANY_ARGUMENT}' argument as well. Use {LIST_COMPANIES_TOOL} "
-            "to see the companies of each environment.")
+            "to see the companies of each environment.", logger)
       if company is not None:
         holder, target_manager = companies.get_or_start(company, environment)
     logger.debug("Calling tool '%s' (environment %s, company %s, session %s)", name,
@@ -1617,7 +1617,7 @@ def build_server(
       return company_error(
           f"Business Central refused to open company '{company}' in environment "
           f"'{target_config.environment}': {exc.error.message} "
-          "Use bc_list_companies for the exact names.")
+          "Use bc_list_companies for the exact names.", logger)
     denial = detect_permission_denied(result)
     if denial is not None:
       # Before the masked-error check: a denial that also happens to contain
