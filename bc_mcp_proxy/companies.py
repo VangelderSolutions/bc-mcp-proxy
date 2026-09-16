@@ -221,9 +221,11 @@ class EnvironmentDirectory:
   first environment is the default: the one the connection is configured
   for, whose session fills the tools cache."""
 
-  def __init__(self, directories: dict[str, CompanyDirectory], default_environment: str) -> None:
+  def __init__(self, directories: dict[str, CompanyDirectory], default_environment: str,
+               note: Optional[str] = None) -> None:
     self._directories = directories
     self._default = default_environment.strip()
+    self._note = (note or "").strip() or None
 
   @property
   def default_environment(self) -> str:
@@ -262,6 +264,9 @@ class EnvironmentDirectory:
       lines.append(f"Environment '{name}'" + (" (default for this connection)"
                                               if self.is_default(name) else "") + ":")
       lines.append(await directory.describe())
+    if self._note:
+      lines.append("")
+      lines.append(self._note)
     return "\n".join(lines)
 
 

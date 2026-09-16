@@ -1265,7 +1265,7 @@ def _build_runtime(
           {name: (directory if name == config.environment.strip()
                   else CompanyDirectory(target_config, api_provider, logger))
            for name, target_config in targets.items()},
-          config.environment.strip())
+          config.environment.strip(), config.environment_note)
 
     def _start_company(
         company: str, environment: str = "",

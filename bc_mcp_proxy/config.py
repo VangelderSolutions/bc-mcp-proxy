@@ -227,6 +227,10 @@ class ProxyConfig:
   # there is no environment variable or command-line flag for this, only
   # `run_proxy(config, prepare=...)`. Requires allow_company_switch.
   environments: Optional[tuple[EnvironmentTarget, ...]] = None
+  # One sentence an embedding package may add to the environment listing, to
+  # say why the list is what it is (which environments were left out, and what
+  # decides that). The proxy itself does not know: it is handed the result.
+  environment_note: Optional[str] = None
   # Persistent on-disk tools/list cache TTL.
   tools_disk_cache_ttl_seconds: float = 24 * 60 * 60
 
