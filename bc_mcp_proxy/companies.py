@@ -37,11 +37,19 @@ from .auth import TokenProvider
 from .config import LEGACY_HOST, ProxyConfig
 
 COMPANY_ARGUMENT = "company"
+ENVIRONMENT_ARGUMENT = "environment"
 LIST_COMPANIES_TOOL = "bc_list_companies"
 _COMPANY_ARGUMENT_SCHEMA: dict[str, Any] = {
     "type": "string",
     "description": ("Business Central company to run this call in. Defaults to the company "
                     "configured for this connection. Use bc_list_companies to see the names."),
+}
+_ENVIRONMENT_ARGUMENT_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "description": ("Business Central environment to run this call in. Defaults to the "
+                    "environment configured for this connection. Use bc_list_companies to see "
+                    "the environments and their companies. Each environment has its own data: "
+                    "a company name can exist in several of them."),
 }
 _STANDARD_API_HOST = f"https://{LEGACY_HOST}"
 # Without this, a client reads the limited list as the environment's full list
@@ -96,6 +104,12 @@ class CompanyDirectory:
     self._timeout = timeout
     self._companies: Optional[list[Company]] = None
     self._lock = asyncio.Lock()
+
+  @property
+  def config(self) -> ProxyConfig:
+    """The effective configuration of this environment: its company,
+    configuration name and allowed companies."""
+    return self._config
 
   @property
   def default_company(self) -> str:
@@ -199,6 +213,55 @@ class CompanyDirectory:
     return "\n".join(lines)
 
 
+class EnvironmentDirectory:
+  """The environments this connection may reach, each with its own company
+  directory, default company and configuration.
+
+  Built by the embedding package through `ProxyConfig.environments`. The
+  first environment is the default: the one the connection is configured
+  for, whose session fills the tools cache."""
+
+  def __init__(self, directories: dict[str, CompanyDirectory], default_environment: str) -> None:
+    self._directories = directories
+    self._default = default_environment.strip()
+
+  @property
+  def default_environment(self) -> str:
+    return self._default
+
+  @property
+  def names(self) -> list[str]:
+    return list(self._directories)
+
+  def is_default(self, environment: str) -> bool:
+    return environment.strip().casefold() == self._default.casefold()
+
+  def resolve(self, requested: str) -> Optional[str]:
+    """The exact environment name, case-insensitively, or None if this
+    connection may not reach it. Business Central environment names are
+    case-insensitive in the URL, but the header and our session keys are
+    not, so a name is always mapped back to the configured spelling."""
+    wanted = requested.strip().casefold()
+    return next((name for name in self._directories if name.casefold() == wanted), None)
+
+  def directory(self, environment: str) -> CompanyDirectory:
+    return self._directories[environment]
+
+  async def describe(self) -> str:
+    """One text covering every environment: what bc_list_companies returns
+    when the connection reaches more than one."""
+    lines = [f"This connection reaches {len(self._directories)} Business Central environments. "
+             f"Pass an environment name as the '{ENVIRONMENT_ARGUMENT}' argument of any tool, and "
+             f"a company name as '{COMPANY_ARGUMENT}'; leaving both out uses environment "
+             f"'{self._default}' and its default company. Each environment holds its own data."]
+    for name, directory in self._directories.items():
+      lines.append("")
+      lines.append(f"Environment '{name}'" + (" (default for this connection)"
+                                              if self.is_default(name) else "") + ":")
+      lines.append(await directory.describe())
+    return "\n".join(lines)
+
+
 def _match(wanted: str, companies: list[Company]) -> Optional[Company]:
   folded = wanted.casefold()
   for c in companies:
@@ -210,22 +273,30 @@ def _match(wanted: str, companies: list[Company]) -> Optional[Company]:
   return None
 
 
-def list_companies_tool() -> Tool:
+def list_companies_tool(environment_switch: bool = False) -> Tool:
+  description = ("List the companies of the Business Central environment and which one is the "
+                 f"default for this connection. Pass a company name as the '{COMPANY_ARGUMENT}' "
+                 "argument of any other tool to run it there; Business Central refuses companies "
+                 "the signed-in user has no permissions in.")
+  if environment_switch:
+    description = ("List the Business Central environments this connection reaches, the companies "
+                   "in each of them, and which environment and company are the default. Pass an "
+                   f"environment name as the '{ENVIRONMENT_ARGUMENT}' argument and a company name "
+                   f"as '{COMPANY_ARGUMENT}' on any other tool to run it there; Business Central "
+                   "refuses what the signed-in user has no permissions for.")
   return Tool(
       name=LIST_COMPANIES_TOOL,
       title="List Business Central companies",
-      description=("List the companies of the Business Central environment and which one is the "
-                   f"default for this connection. Pass a company name as the '{COMPANY_ARGUMENT}' "
-                   "argument of any other tool to run it there; Business Central refuses companies "
-                   "the signed-in user has no permissions in."),
+      description=description,
       inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
       annotations=ToolAnnotations(title="List Business Central companies", readOnlyHint=True,
                                   destructiveHint=False, idempotentHint=True, openWorldHint=False),
   )
 
 
-def add_company_switch(result: ListToolsResult) -> ListToolsResult:
-  """Add the `company` argument to every forwarded tool and list the
+def add_company_switch(result: ListToolsResult, environment_switch: bool = False) -> ListToolsResult:
+  """Add the `company` argument (and, when the connection reaches more than
+  one environment, `environment`) to every forwarded tool and list the
   bc_list_companies tool. Idempotent; returns the same object when nothing
   changes (the cache tiers compare identity)."""
   tools = list(getattr(result, "tools", None) or [])
@@ -241,23 +312,37 @@ def add_company_switch(result: ListToolsResult) -> ListToolsResult:
       continue
     schema = dict(tool.inputSchema or {"type": "object"})
     props = dict(schema.get("properties") or {})
-    if COMPANY_ARGUMENT in props:
+    missing = {COMPANY_ARGUMENT: _COMPANY_ARGUMENT_SCHEMA}
+    if environment_switch:
+      missing[ENVIRONMENT_ARGUMENT] = _ENVIRONMENT_ARGUMENT_SCHEMA
+    missing = {key: value for key, value in missing.items() if key not in props}
+    if not missing:
       out.append(tool)
       continue
-    props[COMPANY_ARGUMENT] = dict(_COMPANY_ARGUMENT_SCHEMA)
+    for key, value in missing.items():
+      props[key] = dict(value)
     schema["properties"] = props
     out.append(tool.model_copy(update={"inputSchema": schema}))
     changed = True
   if not seen_list_tool:
-    out.append(list_companies_tool())
+    out.append(list_companies_tool(environment_switch))
     changed = True
   return result.model_copy(update={"tools": out}) if changed else result
 
 
 def pop_company(arguments: Optional[dict[str, Any]]) -> tuple[Optional[str], dict[str, Any]]:
   """Split the `company` argument off the arguments forwarded to BC."""
+  return _pop(arguments, COMPANY_ARGUMENT)
+
+
+def pop_environment(arguments: Optional[dict[str, Any]]) -> tuple[Optional[str], dict[str, Any]]:
+  """Split the `environment` argument off the arguments forwarded to BC."""
+  return _pop(arguments, ENVIRONMENT_ARGUMENT)
+
+
+def _pop(arguments: Optional[dict[str, Any]], key: str) -> tuple[Optional[str], dict[str, Any]]:
   args = dict(arguments or {})
-  value = args.pop(COMPANY_ARGUMENT, None)
+  value = args.pop(key, None)
   if isinstance(value, str) and value.strip():
     return value.strip(), args
   return None, args

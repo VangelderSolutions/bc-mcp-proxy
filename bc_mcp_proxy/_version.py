@@ -5,4 +5,4 @@ triggering the package __init__ (which imports config -> proxy).
 Bump together with pyproject.toml and dxt/manifest.json.
 """
 
-__version__ = "0.11.2"
+__version__ = "0.12.0"
