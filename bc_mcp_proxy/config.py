@@ -123,6 +123,23 @@ def resolve_token_scope(base_url: str, override: Optional[str]) -> str:
   return V27_SCOPE if is_legacy_endpoint(base_url) else MODERN_SCOPE
 
 
+@dataclass(frozen=True)
+class EnvironmentTarget:
+  """One Business Central environment a connection may reach.
+
+  Set through `ProxyConfig.environments` by an embedding package: the proxy
+  itself has no setting for it, because deciding which environments a user
+  may reach, and with which company and configuration, is what the embedding
+  package's own rules are for.
+  """
+
+  name: str
+  company: Optional[str] = None
+  configuration_name: Optional[str] = None
+  # Like ProxyConfig.allowed_companies, but for this environment.
+  allowed_companies: Optional[tuple[str, ...]] = None
+
+
 @dataclass(slots=True)
 class ProxyConfig:
   """Configuration values required to run the Business Central MCP proxy."""
@@ -201,6 +218,15 @@ class ProxyConfig:
   # a convenience limit, not a security boundary.
   # BC_ALLOWED_COMPANIES="A;B" / --AllowedCompanies "A;B" sets it.
   allowed_companies: Optional[tuple[str, ...]] = None
+  # The environments this connection may reach, in the order the client sees
+  # them; the first one is the default and must match `environment` (and its
+  # company and configuration `company` / `configuration_name`). More than one
+  # adds an optional `environment` argument next to `company`, and one upstream
+  # session per environment and company. None or a single entry keeps the
+  # connection bound to `environment`, which is what a stand-alone install does:
+  # there is no environment variable or command-line flag for this, only
+  # `run_proxy(config, prepare=...)`. Requires allow_company_switch.
+  environments: Optional[tuple[EnvironmentTarget, ...]] = None
   # Persistent on-disk tools/list cache TTL.
   tools_disk_cache_ttl_seconds: float = 24 * 60 * 60
 

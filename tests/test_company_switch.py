@@ -176,7 +176,7 @@ class _Manager:
 async def test_sessions_are_created_once_per_company_and_closed() -> None:
   made: list[str] = []
 
-  def factory(company: str):
+  def factory(company: str, environment: str = ""):
     made.append(company)
     return _UpstreamSessionHolder(), _Manager()
 

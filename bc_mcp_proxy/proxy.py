@@ -42,12 +42,15 @@ from .auth import TokenProvider, create_token_provider
 from .companies import (
     LIMITED_REASON,
     LIST_COMPANIES_TOOL,
+    COMPANY_ARGUMENT,
     CompanyDirectory,
+    EnvironmentDirectory,
     add_company_switch,
     company_error,
     pop_company,
+    pop_environment,
 )
-from .config import V27_SCOPE, ProxyConfig, is_v28_endpoint, validate_base_url
+from .config import V27_SCOPE, EnvironmentTarget, ProxyConfig, is_v28_endpoint, validate_base_url
 from .permissions import (
     STATIC_TOOL_RE,
     PermissionRegistry,
@@ -608,10 +611,12 @@ class _ToolsCache:
       annotate: bool = False,
       read_filter: Optional[Callable[[ListToolsResult], ListToolsResult]] = None,
       company_switch: bool = False,
+      environment_switch: bool = False,
   ) -> None:
     self._ttl = ttl_seconds
     self._annotate = annotate
     self._company_switch = company_switch
+    self._environment_switch = environment_switch
     # Applied on every read, never on store: the stored (and on-disk) list
     # stays complete because the disk cache is keyed per tenant/env/company/
     # configuration, not per user, and verdicts belong to one user.
@@ -643,7 +648,7 @@ class _ToolsCache:
     # background refresh), so the client always sees the same annotated set.
     stored = _annotate_tools(result) if self._annotate else result
     if self._company_switch:
-      stored = add_company_switch(stored)
+      stored = add_company_switch(stored, self._environment_switch)
     self._result = stored
     self._fetched_at = now if now is not None else time.monotonic()
 
@@ -994,43 +999,64 @@ class _UpstreamConnectionManager:
 
 
 class _CompanySessions:
-  """One upstream connection per company, opened on first use.
+  """One upstream connection per environment and company, opened on first use.
 
-  The default company's session is the one run_proxy owns (it fills the
-  tools cache and the permission registry); every other company gets a
-  plain manager whose only job is to serve tool calls. Sessions live until
-  the proxy stops."""
+  The default pair's session is the one run_proxy owns (it fills the tools
+  cache and the permission registry); every other one gets a plain manager
+  whose only job is to serve tool calls. Sessions live until the proxy
+  stops. Without the environment switch there is one environment, so the
+  keys differ only in the company."""
 
   def __init__(
       self,
       default_company: str,
-      factory: Callable[[str], tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]],
+      factory: Callable[[str, str], tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]],
       logger: logging.Logger,
+      default_environment: str = "",
   ) -> None:
     self._default = default_company
+    self._default_environment = default_environment.strip()
     self._factory = factory
     self._logger = logger
-    self._sessions: dict[str, tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]] = {}
+    self._sessions: dict[tuple[str, str],
+                         tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]] = {}
     self._tasks: list[asyncio.Task[None]] = []
 
   @property
   def default_company(self) -> str:
     return self._default
 
-  def is_default(self, company: str) -> bool:
+  @property
+  def default_environment(self) -> str:
+    return self._default_environment
+
+  def is_default(self, company: str, environment: Optional[str] = None) -> bool:
+    if environment is not None and environment.strip() != self._default_environment:
+      return False
     return company.strip() == self._default
 
-  def get_or_start(self, company: str) -> tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]:
-    key = company.strip()
+  def get_or_start(
+      self, company: str, environment: Optional[str] = None,
+  ) -> tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]:
+    env = (environment or self._default_environment).strip()
+    key = (env, company.strip())
     if key not in self._sessions:
-      holder, manager = self._factory(key)
+      holder, manager = self._factory(key[1], env)
       self._sessions[key] = (holder, manager)
-      self._tasks.append(asyncio.create_task(manager.run(), name=f"bc-mcp-upstream[{key}]"))
-      self._logger.info("Opening an upstream session for company %r", key)
+      label = f"{env}/{key[1]}" if env else key[1]
+      self._tasks.append(asyncio.create_task(manager.run(), name=f"bc-mcp-upstream[{label}]"))
+      if env and env != self._default_environment:
+        self._logger.info("Opening an upstream session for environment %r company %r", env, key[1])
+      else:
+        self._logger.info("Opening an upstream session for company %r", key[1])
     return self._sessions[key]
 
   @property
   def open_companies(self) -> list[str]:
+    return [company for _, company in self._sessions]
+
+  @property
+  def open_targets(self) -> list[tuple[str, str]]:
     return list(self._sessions)
 
   async def close(self) -> None:
@@ -1086,6 +1112,9 @@ class _Runtime:
   companies: Optional[_CompanySessions]
   manager: _UpstreamConnectionManager
   disk_cache: bool = True
+  # Set only when the connection reaches more than one environment; `directory`
+  # is then the one of the default environment.
+  environments: Optional[EnvironmentDirectory] = None
 
 
 @dataclasses.dataclass
@@ -1151,6 +1180,38 @@ async def _wait_for_first_tools(slot: RuntimeSlot, seconds: float) -> float:
   return loop.time() - started
 
 
+def _environment_targets(config: ProxyConfig) -> tuple[EnvironmentTarget, ...]:
+  """The environments of this connection, always starting with the configured
+  one. An embedding package that passes none gets the single configured
+  environment, which is what a stand-alone install runs with."""
+  configured = EnvironmentTarget(
+      name=config.environment.strip(), company=config.company,
+      configuration_name=config.configuration_name, allowed_companies=config.allowed_companies)
+  targets = tuple(config.environments or ())
+  if not targets:
+    return (configured,)
+  rest = tuple(t for t in targets if t.name.strip().casefold() != configured.name.casefold())
+  return (configured,) + rest
+
+
+def _environment_configs(config: ProxyConfig) -> list[tuple[str, ProxyConfig]]:
+  """One effective config per environment: name, company, configuration and
+  allowed companies of that environment, everything else from the
+  connection."""
+  out: list[tuple[str, ProxyConfig]] = []
+  for target in _environment_targets(config):
+    name = target.name.strip()
+    out.append((name, dataclasses.replace(
+        config, environment=name, company=target.company,
+        configuration_name=target.configuration_name,
+        allowed_companies=target.allowed_companies)))
+  return out
+
+
+def _environment_switch_on(config: ProxyConfig) -> bool:
+  return config.allow_company_switch and len(_environment_targets(config)) > 1
+
+
 def _build_runtime(
     config: ProxyConfig,
     state: _UpstreamSessionHolder,
@@ -1185,31 +1246,52 @@ def _build_runtime(
       annotate=config.annotate_tools,
       read_filter=registry.filter if registry is not None else None,
       company_switch=config.allow_company_switch,
+      environment_switch=_environment_switch_on(config),
   )
   directory: Optional[CompanyDirectory] = None
   companies: Optional[_CompanySessions] = None
+  environments: Optional[EnvironmentDirectory] = None
   if config.allow_company_switch:
     # The company list comes from the standard API, which needs the api.*
     # scope; the same MSAL cache and refresh token serve both scopes.
     api_config = dataclasses.replace(config, token_scope=V27_SCOPE)
     api_provider = options.api_token_provider or create_token_provider(api_config, logger=logger)
-    directory = CompanyDirectory(config, api_provider, logger)
+    # One config per environment: its company, configuration and allowed
+    # companies travel with it into the directory, the headers and the URL.
+    targets = {name: target_config for name, target_config in _environment_configs(config)}
+    directory = CompanyDirectory(targets[config.environment.strip()], api_provider, logger)
+    if _environment_switch_on(config):
+      environments = EnvironmentDirectory(
+          {name: (directory if name == config.environment.strip()
+                  else CompanyDirectory(target_config, api_provider, logger))
+           for name, target_config in targets.items()},
+          config.environment.strip())
 
-    def _start_company(company: str) -> tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]:
-      company_config = dataclasses.replace(config, company=company)
+    def _start_company(
+        company: str, environment: str = "",
+    ) -> tuple[_UpstreamSessionHolder, _UpstreamConnectionManager]:
+      base = targets.get(environment.strip()) or config
+      company_config = dataclasses.replace(base, company=company)
       holder = _UpstreamSessionHolder()
       manager = _UpstreamConnectionManager(
-          state=holder, config=company_config, url=url,
+          state=holder, config=company_config, url=_build_endpoint_url(
+              company_config, base_url_override=sanitized_base_url),
           headers=_build_transport_headers(company_config), auth=auth, logger=logger)
       return holder, manager
 
-    companies = _CompanySessions((config.company or "").strip(), _start_company, logger)
+    companies = _CompanySessions((config.company or "").strip(), _start_company, logger,
+                                 config.environment.strip())
     logger.info(
         "BC_ALLOW_COMPANY_SWITCH is on: tools accept a 'company' argument and "
         "bc_list_companies lists the user's companies (default company %r)", config.company)
     if config.allowed_companies is not None:
       logger.info("BC_ALLOWED_COMPANIES limits the switch to: %s",
                   ", ".join(config.allowed_companies) or "<none besides the default>")
+    if environments is not None:
+      logger.info(
+          "Environment switch is on: tools accept an 'environment' argument; "
+          "reachable environments: %s (default %r)",
+          ", ".join(environments.names), config.environment)
   if registry is not None:
     logger.info(
         "BC_HIDE_UNAUTHORIZED_TOOLS is on: after each connect the proxy reads "
@@ -1242,7 +1324,7 @@ def _build_runtime(
   )
   return _Runtime(config=config, url=url, auth=auth, registry=registry, cache=cache,
                   directory=directory, companies=companies, manager=manager,
-                  disk_cache=options.disk_cache)
+                  disk_cache=options.disk_cache, environments=environments)
 
 
 async def _prepare_runtime(
@@ -1376,28 +1458,58 @@ def build_server(
     assert runtime is not None
     config, manager, registry, cache = runtime.config, runtime.manager, runtime.registry, runtime.cache
     directory, companies = runtime.directory, runtime.companies
+    environments = runtime.environments
     company: Optional[str] = None
+    environment: Optional[str] = None
+    target_config = config
     holder, target_manager = state, manager
     if directory is not None and companies is not None:
       if name == LIST_COMPANIES_TOOL:
-        return CallToolResult(content=[TextContent(type="text", text=await directory.describe())])
+        described = await (environments.describe() if environments is not None
+                           else directory.describe())
+        return CallToolResult(content=[TextContent(type="text", text=described)])
+      if environments is not None:
+        wanted_environment, arguments = pop_environment(arguments)
+        if wanted_environment is not None and not environments.is_default(wanted_environment):
+          resolved_environment = environments.resolve(wanted_environment)
+          if resolved_environment is None:
+            return company_error(
+                f"Environment '{wanted_environment}' is not available for this connection. "
+                f"Available: {', '.join(environments.names)}. The environment may still exist "
+                "in Business Central; this connection reaches the ones listed by "
+                f"{LIST_COMPANIES_TOOL}.")
+          environment = resolved_environment
+          directory = environments.directory(environment)
+          target_config = directory.config
       requested, arguments = pop_company(arguments)
-      if requested is not None and not companies.is_default(requested):
+      # Without a company, another environment still runs in its own default.
+      if requested is None and environment is not None:
+        company = directory.default_company or None
+      if requested is not None and not companies.is_default(requested, environment):
         resolved, known = await directory.resolve(requested)
         if resolved is None:
           names = ", ".join(sorted(c.name for c in known))
-          if config.allowed_companies is not None:
+          if target_config.allowed_companies is not None:
             return company_error(
                 f"Company '{requested}' is not available for this connection, which is "
                 f"{LIMITED_REASON}; the company may still exist in environment "
-                f"'{config.environment}'. Available: {names}.")
+                f"'{target_config.environment}'. Available: {names}.")
           return company_error(
               f"Company '{requested}' does not exist in environment "
-              f"'{config.environment}'. Companies: {names}.")
+              f"'{target_config.environment}'. Companies: {names}.")
         company = resolved
-        holder, target_manager = companies.get_or_start(company)
-    logger.debug("Calling tool '%s' (company %s, session %s)", name,
-                 company or config.company, holder.session_id() or "<pending>")
+      if environment is not None and not company:
+        # Business Central refuses a session without a Company header, and the
+        # other environment has no default of its own to fall back on.
+        return company_error(
+            f"Environment '{environment}' has no default company for this connection, so the "
+            f"call needs a '{COMPANY_ARGUMENT}' argument as well. Use {LIST_COMPANIES_TOOL} "
+            "to see the companies of each environment.")
+      if company is not None:
+        holder, target_manager = companies.get_or_start(company, environment)
+    logger.debug("Calling tool '%s' (environment %s, company %s, session %s)", name,
+                 environment or config.environment, company or config.company,
+                 holder.session_id() or "<pending>")
     try:
       result = await _invoke_with_session_recovery(
           holder, target_manager, logger,
@@ -1411,7 +1523,8 @@ def build_server(
       # tell the client in the tool result instead of a bare protocol error.
       return company_error(
           f"Business Central refused to open company '{company}' in environment "
-          f"'{config.environment}': {exc.error.message} Use bc_list_companies for the exact names.")
+          f"'{target_config.environment}': {exc.error.message} "
+          "Use bc_list_companies for the exact names.")
     denial = detect_permission_denied(result)
     if denial is not None:
       # Before the masked-error check: a denial that also happens to contain
@@ -1434,7 +1547,7 @@ def build_server(
           name, masked,
       )
       return _flag_as_error(result)
-    annotated = _annotate_company_not_found(result, config)
+    annotated = _annotate_company_not_found(result, target_config)
     if annotated is not result:
       logger.warning(
           "Upstream could not resolve a company for tool '%s' "
