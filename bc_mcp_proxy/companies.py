@@ -253,7 +253,10 @@ class EnvironmentDirectory:
     lines = [f"This connection reaches {len(self._directories)} Business Central environments. "
              f"Pass an environment name as the '{ENVIRONMENT_ARGUMENT}' argument of any tool, and "
              f"a company name as '{COMPANY_ARGUMENT}'; leaving both out uses environment "
-             f"'{self._default}' and its default company. Each environment holds its own data."]
+             f"'{self._default}' and its default company. Each environment holds its own data, and "
+             "its own actions: an action name found in one environment may not exist in another, so "
+             "search again after switching. An environment that is not listed here is not available "
+             "for this connection; it may still exist in Business Central."]
     for name, directory in self._directories.items():
       lines.append("")
       lines.append(f"Environment '{name}'" + (" (default for this connection)"
