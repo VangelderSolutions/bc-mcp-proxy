@@ -1067,6 +1067,94 @@ class _CompanySessions:
     self._tasks.clear()
 
 
+def _rebuild_views(runtime: _Runtime, config: ProxyConfig, logger: logging.Logger) -> bool:
+  """Point the read-only views at `config`, leaving every connection alone.
+
+  Rebuilt: the company directory per environment, the environment directory
+  behind bc_list_companies, and the allowed-company limit the call path
+  checks. Untouched: the upstream sessions, the per-company sessions and the
+  tools cache -- a changed allow-list says nothing about the connections that
+  are already open, and BC enforces every call regardless.
+
+  Only `allowed_companies`, `environments` and `environment_note` are taken
+  from `config`; a different default environment or company needs the
+  connection rebuilt and therefore still a restart. Returns False when there
+  is nothing to point at (the company switch is off, so there are no views)
+  or when the new configuration is for another environment.
+  """
+  if runtime.directory is None or runtime.api_provider is None:
+    return False
+  running = runtime.config.environment.strip()
+  incoming = (config.environment or "").strip()
+  if incoming and incoming.casefold() != running.casefold():
+    # The session, its URL and its headers were built for `running`; moving
+    # the connection is a restart, not a view swap.
+    logger.warning(
+        "Ignoring a live reconfigure for environment %r: this connection runs in %r "
+        "and changing that needs a restart", incoming, running)
+    return False
+  merged = dataclasses.replace(
+      runtime.config, allowed_companies=config.allowed_companies,
+      environments=config.environments, environment_note=config.environment_note)
+  default = merged.environment.strip()
+  targets = {name: target for name, target in _environment_configs(merged)}
+  directory = CompanyDirectory(targets[default], runtime.api_provider, logger)
+  environments = None
+  if _environment_switch_on(merged):
+    environments = EnvironmentDirectory(
+        {name: (directory if name == default
+                else CompanyDirectory(target, runtime.api_provider, logger))
+         for name, target in targets.items()},
+        default, merged.environment_note)
+  runtime.config = merged
+  runtime.directory = directory
+  runtime.environments = environments
+  return True
+
+
+class PrepareContext:
+  """How a prepare hook feeds a later configuration back into a running proxy.
+
+  The hook gets one through `attach()` (when it defines that method) before it
+  is called, and may keep it for the life of the connection. Calling
+  `reconfigure()` replaces what bc_list_companies reports and which companies
+  a call may be routed to, without a client restart.
+
+  It is a no-op unless the prepared configuration sets
+  `allow_live_reconfigure`. A call that arrives before the runtime exists is
+  held and applied as soon as it does, so a hook that starts a background
+  check inside itself cannot lose the first result.
+  """
+
+  def __init__(self, slot: "RuntimeSlot", logger: logging.Logger) -> None:
+    self._slot = slot
+    self._logger = logger
+    self._pending: Optional[ProxyConfig] = None
+
+  async def reconfigure(self, config: ProxyConfig) -> None:
+    if not isinstance(config, ProxyConfig):
+      raise TypeError(f"reconfigure got {type(config).__name__}, expected ProxyConfig")
+    runtime = self._slot.runtime
+    if runtime is None:
+      self._pending = config
+      return
+    if not runtime.config.allow_live_reconfigure:
+      self._logger.debug(
+          "Live reconfigure is off (allow_live_reconfigure); the new configuration "
+          "applies on the next start")
+      return
+    if not _rebuild_views(runtime, config, self._logger):
+      return
+    self._logger.info("Applied a new configuration to the running connection")
+    await self._slot.notifier.maybe_notify(runtime.cache.get_any())
+
+  async def drain(self) -> None:
+    """Apply a reconfigure that arrived while the runtime was still building."""
+    pending, self._pending = self._pending, None
+    if pending is not None:
+      await self.reconfigure(pending)
+
+
 PrepareHook = Callable[[ProxyConfig], Awaitable[ProxyConfig]]
 """Async callback an embedding package passes to run_proxy.
 
@@ -1115,6 +1203,9 @@ class _Runtime:
   # Set only when the connection reaches more than one environment; `directory`
   # is then the one of the default environment.
   environments: Optional[EnvironmentDirectory] = None
+  # The standard-API token provider the directories were built with. Kept so
+  # a live reconfigure can rebuild them without a second sign-in.
+  api_provider: Optional[TokenProvider] = None
 
 
 @dataclasses.dataclass
@@ -1251,6 +1342,7 @@ def _build_runtime(
   directory: Optional[CompanyDirectory] = None
   companies: Optional[_CompanySessions] = None
   environments: Optional[EnvironmentDirectory] = None
+  api_provider: Optional[TokenProvider] = None
   if config.allow_company_switch:
     # The company list comes from the standard API, which needs the api.*
     # scope; the same MSAL cache and refresh token serve both scopes.
@@ -1324,7 +1416,8 @@ def _build_runtime(
   )
   return _Runtime(config=config, url=url, auth=auth, registry=registry, cache=cache,
                   directory=directory, companies=companies, manager=manager,
-                  disk_cache=options.disk_cache, environments=environments)
+                  disk_cache=options.disk_cache, environments=environments,
+                  api_provider=api_provider)
 
 
 async def _prepare_runtime(
@@ -1583,11 +1676,18 @@ async def run_slot_upstream(
   if slot.runtime is None:
     if prepare is None:
       raise RuntimeError("the slot has no runtime and no prepare hook to build one")
+    # Attached before the hook runs, because a hook may start a background
+    # check inside itself and call back before preparation returns.
+    context = PrepareContext(slot, logger)
+    attach = getattr(prepare, "attach", None)
+    if callable(attach):
+      attach(context)
     slot.runtime = await _prepare_runtime(config, prepare, slot.state, slot.notifier, logger, options)
     if slot.runtime is None:
       # Like a permanent rejection: stay up so the client sees the error.
       await asyncio.Event().wait()
       return  # pragma: no cover - only on cancellation, which re-raises
+    await context.drain()
   await slot.runtime.manager.run()
 
 

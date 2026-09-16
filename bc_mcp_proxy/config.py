@@ -231,6 +231,13 @@ class ProxyConfig:
   # say why the list is what it is (which environments were left out, and what
   # decides that). The proxy itself does not know: it is handed the result.
   environment_note: Optional[str] = None
+  # Let an embedding package refresh the environment listing and the allowed
+  # companies while the proxy runs, rather than only at startup (see
+  # PrepareContext in proxy.py). Off by default: a changed configuration then
+  # reaches the client on the next start, exactly as before. Like
+  # `environments` there is no environment variable or command-line flag for
+  # it -- only a package that embeds the proxy can turn it on.
+  allow_live_reconfigure: bool = False
   # Persistent on-disk tools/list cache TTL.
   tools_disk_cache_ttl_seconds: float = 24 * 60 * 60
 
