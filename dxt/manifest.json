@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "vgs-bc-mcp",
   "display_name": "Business Central MCP Proxy",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "Connect Claude Desktop to Microsoft Dynamics 365 Business Central through Microsoft's official Business Central MCP server.",
   "long_description": "Connects Claude Desktop to your Business Central environment (version 26 and later) through Microsoft's official MCP server. Every call runs under your own Business Central user, so your permission sets, security filters and licence apply unchanged.\n\n**What the proxy adds**\n\n- Browser sign-in with automatic device-code fallback, and silent token refresh afterwards.\n- Instant tool list on start-up, with reconnect and retry on transient errors and rate limits.\n- Read-only and destructive hints on every tool, so Claude asks before it writes.\n- A clear note when Business Central refuses a call for lack of permission, and an optional setting to hide tools you may not use.\n- Pass-through of resources and prompts for Business Central 28 and 29.\n\n**Before you install**\n\nYou need an Azure app registration with the Business Central delegated permissions and 'http://localhost' as a mobile and desktop redirect URI. The settings below ask for its tenant ID and client ID, plus your environment and company name.\n\nMaintained by Vangelder Solutions, an independent Microsoft partner; not affiliated with Microsoft or Anthropic. Privacy policy: https://vangeldersolutions.github.io/bc-mcp-proxy/privacy/",
   "author": {

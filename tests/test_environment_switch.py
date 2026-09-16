@@ -298,3 +298,19 @@ async def test_the_listing_tool_describes_every_environment(running) -> None:
   text = result.content[0].text
   assert "Environment 'Development-V28' (default for this connection):" in text
   assert "Environment 'Sandbox-BE':" in text
+
+
+async def test_an_embedding_package_can_say_why_the_list_is_what_it_is() -> None:
+  """The proxy is handed the result, not the rules: an embedding package adds
+  the sentence that explains the absences (measured: without it, a client asked
+  why an environment was missing invented four plausible causes)."""
+  configs = dict(proxy._environment_configs(_cfg(SANDBOX)))
+  note = "Not reachable for you: Production (MCP Guard is not installed there)."
+  directories = EnvironmentDirectory(
+      {"Development-V28": _Directory(configs["Development-V28"], API_PAYLOAD),
+       "Sandbox-BE": _Directory(configs["Sandbox-BE"], SANDBOX_PAYLOAD)},
+      "Development-V28", note)
+  text = await directories.describe()
+  assert text.rstrip().endswith(note)
+  # Without one the listing is unchanged.
+  assert note not in await _directories().describe()
