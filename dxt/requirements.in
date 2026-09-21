@@ -56,4 +56,4 @@ python-dotenv>=1.2.3         # SNYK-PYTHON-PYTHONDOTENV-16115271
 python-multipart>=0.0.30     # SNYK-PYTHON-PYTHONMULTIPART-*
 requests>=2.33.1             # SNYK-PYTHON-REQUESTS-*
 starlette>=1.3.1             # SNYK-PYTHON-STARLETTE-*
-urllib3>=2.7.0               # SNYK-PYTHON-URLLIB3-* (CVE-2026-44431/44432)
+urllib3>=2.8.0               # SNYK-PYTHON-URLLIB3-* (CVE-2026-44431/44432)

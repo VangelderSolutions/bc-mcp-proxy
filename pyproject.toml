@@ -50,12 +50,12 @@ dependencies = [
   # the rationale for exact (==) pins instead of >=.
   "h11==0.16.0",
   "cryptography==50.0.1",
-  "pyjwt==2.13.0",
+  "pyjwt==2.14.0",
   "python-dotenv==1.2.3",
   "python-multipart==0.0.32",
   "requests==2.34.2",
   "starlette==1.6.0",
-  "urllib3==2.7.0"
+  "urllib3==2.8.0"
 ]
 
 [project.optional-dependencies]
