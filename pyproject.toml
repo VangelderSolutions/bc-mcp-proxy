@@ -55,7 +55,7 @@ dependencies = [
   "python-multipart==0.0.32",
   "requests==2.34.2",
   "starlette==1.6.0",
-  "urllib3==2.7.0"
+  "urllib3==2.8.0"
 ]
 
 [project.optional-dependencies]
