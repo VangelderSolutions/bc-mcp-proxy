@@ -54,7 +54,7 @@ dependencies = [
   "python-dotenv==1.2.3",
   "python-multipart==0.0.32",
   "requests==2.34.2",
-  "starlette==1.6.0",
+  "starlette==1.7.0",
   "urllib3==2.8.0"
 ]
 
