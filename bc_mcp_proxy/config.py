@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from urllib.parse import urlparse
 
 from ._version import __version__
+
+if TYPE_CHECKING:
+  from .policy import ToolPolicy
 
 
 # Since BC 2026 release wave 1 (v28) Microsoft documents a single MCP host for
@@ -238,6 +241,12 @@ class ProxyConfig:
   # `environments` there is no environment variable or command-line flag for
   # it -- only a package that embeds the proxy can turn it on.
   allow_live_reconfigure: bool = False
+  # Which actions this connection offers and runs, when an embedding package
+  # already knows (see policy.py): refused tools are left out of the listings
+  # and a refused call is answered with the reason, without going to Business
+  # Central. None: no policy, which is what a stand-alone install has. A
+  # convenience, not a boundary -- Business Central decides every call anyway.
+  tool_policy: Optional["ToolPolicy"] = None
   # Persistent on-disk tools/list cache TTL.
   tools_disk_cache_ttl_seconds: float = 24 * 60 * 60
 
