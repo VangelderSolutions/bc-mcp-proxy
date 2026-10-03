@@ -51,6 +51,7 @@ from .companies import (
     pop_environment,
 )
 from .config import V27_SCOPE, EnvironmentTarget, ProxyConfig, is_v28_endpoint, validate_base_url
+from .policy import SEARCH_TOOL, action_of, filter_search_result, filter_tools
 from .permissions import (
     STATIC_TOOL_RE,
     PermissionRegistry,
@@ -1076,7 +1077,7 @@ def _rebuild_views(runtime: _Runtime, config: ProxyConfig, logger: logging.Logge
   tools cache -- a changed allow-list says nothing about the connections that
   are already open, and BC enforces every call regardless.
 
-  Only `allowed_companies`, `environments` and `environment_note` are taken
+  Only `allowed_companies`, `environments`, `environment_note` and `tool_policy` are taken
   from `config`; a different default environment or company needs the
   connection rebuilt and therefore still a restart. Returns False when there
   is nothing to point at (the company switch is off, so there are no views)
@@ -1095,7 +1096,8 @@ def _rebuild_views(runtime: _Runtime, config: ProxyConfig, logger: logging.Logge
     return False
   merged = dataclasses.replace(
       runtime.config, allowed_companies=config.allowed_companies,
-      environments=config.environments, environment_note=config.environment_note)
+      environments=config.environments, environment_note=config.environment_note,
+      tool_policy=config.tool_policy)
   default = merged.environment.strip()
   targets = {name: target for name, target in _environment_configs(merged)}
   directory = CompanyDirectory(targets[default], runtime.api_provider, logger)
@@ -1509,13 +1511,13 @@ def build_server(
       return empty
     cache, config_now = runtime.cache, runtime.config
 
-    fresh = cache.get_fresh()
+    fresh = filter_tools(cache.get_fresh(), config_now.tool_policy)
     if fresh is not None:
       logger.debug("Serving tools/list from cache")
       notifier.record_served(fresh)
       return fresh
 
-    stale = cache.get_any()
+    stale = filter_tools(cache.get_any(), config_now.tool_policy)
     if stale is not None:
       # We have something cached but it's beyond the TTL. Serve it now
       # to keep the client unblocked, and refresh in the background.
@@ -1600,6 +1602,13 @@ def build_server(
             "to see the companies of each environment.", logger)
       if company is not None:
         holder, target_manager = companies.get_or_start(company, environment)
+    policy = config.tool_policy
+    if policy is not None:
+      # Asked per call and with the environment it runs in: the same action
+      # can be allowed in one environment and not in another.
+      refused = policy.refusal(action_of(name, arguments), environment)
+      if refused is not None:
+        return company_error(refused, logger)
     logger.debug("Calling tool '%s' (environment %s, company %s, session %s)", name,
                  environment or config.environment, company or config.company,
                  holder.session_id() or "<pending>")
@@ -1618,6 +1627,8 @@ def build_server(
           f"Business Central refused to open company '{company}' in environment "
           f"'{target_config.environment}': {exc.error.message} "
           "Use bc_list_companies for the exact names.", logger)
+    if policy is not None and name == SEARCH_TOOL:
+      result = filter_search_result(result, policy, environment)
     denial = detect_permission_denied(result)
     if denial is not None:
       # Before the masked-error check: a denial that also happens to contain
