@@ -47,6 +47,8 @@ def _cfg(*targets: EnvironmentTarget, **overrides: Any) -> ProxyConfig:
       **overrides)
 
 
+SWITCHED_OFF = ("Not available for this connection: Sandbox-BE (you switched the AI assistant off "
+                "there yourself).")
 SANDBOX = EnvironmentTarget(name="Sandbox-BE", company="CRONUS BE",
                             configuration_name="BC-MCP-V29", allowed_companies=("CRONUS BE",))
 
@@ -89,6 +91,14 @@ def test_the_configured_environment_comes_first_and_is_not_duplicated() -> None:
 
 def test_the_switch_needs_the_company_switch() -> None:
   assert proxy._environment_switch_on(_cfg(SANDBOX, allow_company_switch=False)) is False
+
+
+def test_one_environment_with_a_note_keeps_the_switch() -> None:
+  # The note says an environment fell away; the client must still be able to
+  # name it, or its call runs in the one that is left.
+  assert proxy._environment_switch_on(_cfg(environment_note=SWITCHED_OFF)) is True
+  assert proxy._environment_switch_on(_cfg(environment_note="  ")) is False
+  assert proxy._environment_switch_on(_cfg(environment_note=SWITCHED_OFF, allow_company_switch=False)) is False
 
 
 # -- schema and arguments ------------------------------------------------------
@@ -230,7 +240,8 @@ def _runtime_with_environments(config, state, notifier, logger):
       config=config, url="https://example.invalid", auth=None, registry=None,  # type: ignore[arg-type]
       cache=_ToolsCache(ttl_seconds=60.0), directory=directories[config.environment.strip()],
       companies=sessions, manager=_FakeManager(state, config),  # type: ignore[arg-type]
-      environments=EnvironmentDirectory(directories, config.environment.strip()))
+      environments=(EnvironmentDirectory(directories, config.environment.strip(), config.environment_note)
+                    if proxy._environment_switch_on(config) else None))
 
 
 @pytest.fixture
@@ -314,3 +325,39 @@ async def test_an_embedding_package_can_say_why_the_list_is_what_it_is() -> None
   assert text.rstrip().endswith(note)
   # Without one the listing is unchanged.
   assert note not in await _directories().describe()
+
+
+# -- one environment left, and the reason the other one is gone -----------------
+
+
+async def test_a_fallen_away_environment_is_refused_with_its_reason(running) -> None:
+  # Seen live on 11-10-2026 in Copilot: with the sandbox switched off the
+  # question "in Sandbox-BE" was answered from Development-V28, under the
+  # sandbox's name, because nothing could carry the environment any more.
+  async with running(_cfg(environment_note=SWITCHED_OFF)) as client:
+    refused = await _text(client, {ENVIRONMENT_ARGUMENT: "Sandbox-BE"})
+    own = await _text(client, {ENVIRONMENT_ARGUMENT: "development-v28"})
+    listing = await asyncio.wait_for(client.call_tool(LIST_COMPANIES_TOOL, {}), 5)
+  text = refused.content[0].text
+  assert refused.isError
+  assert text.startswith("Environment 'Sandbox-BE' is not available for this connection")
+  assert "Available: Development-V28." in text and text.endswith(SWITCHED_OFF)
+  assert not own.isError and own.content[0].text == "List_Customers_PAG30009 in CRONUS BE"
+  described = listing.content[0].text
+  assert described.startswith("This connection reaches 1 Business Central environment. ")
+  assert "Environment 'Development-V28' (default for this connection):" in described
+  assert described.rstrip().endswith(SWITCHED_OFF)
+
+
+def test_the_built_runtime_offers_the_environment_argument_with_one_environment() -> None:
+  state = _UpstreamSessionHolder()
+  runtime = proxy._build_runtime(
+      dataclasses.replace(_cfg(environment_note=SWITCHED_OFF), tenant_id="t", client_id="c"),
+      state, proxy._ClientNotifier(LOGGER), LOGGER,
+      proxy.RuntimeOptions(token_provider=object(), api_token_provider=object(), disk_cache=False))
+  assert runtime.environments is not None and runtime.environments.names == ["Development-V28"]
+  assert runtime.environments.note == SWITCHED_OFF
+  runtime.cache.store(ListToolsResult(tools=[Tool(name="bc_actions_search", inputSchema={"type": "object"})]))
+  listed = runtime.cache.get_any()
+  assert listed is not None
+  assert ENVIRONMENT_ARGUMENT in listed.tools[0].inputSchema["properties"]
