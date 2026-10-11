@@ -43,6 +43,7 @@ from .companies import (
     LIMITED_REASON,
     LIST_COMPANIES_TOOL,
     COMPANY_ARGUMENT,
+    ENVIRONMENT_ARGUMENT,
     CompanyDirectory,
     EnvironmentDirectory,
     add_company_switch,
@@ -1576,6 +1577,19 @@ def build_server(
           environment = resolved_environment
           directory = environments.directory(environment)
           target_config = directory.config
+      else:
+        # One environment: a call that names another one must not run here.
+        # A client can still name one it saw earlier, when the connection
+        # reached more, and would otherwise read or change the wrong data
+        # without noticing.
+        wanted_environment = (arguments or {}).get(ENVIRONMENT_ARGUMENT)
+        own = (config.environment or "").strip()
+        if (isinstance(wanted_environment, str) and wanted_environment.strip() and own
+            and wanted_environment.strip().casefold() != own.casefold()):
+          return company_error(
+              f"Environment '{wanted_environment.strip()}' is not available for this connection. "
+              f"Available: {own}. The environment may still exist in Business Central; this "
+              f"connection reaches the ones listed by {LIST_COMPANIES_TOOL}.", logger)
       requested, arguments = pop_company(arguments)
       # Without a company, another environment still runs in its own default.
       if requested is None and environment is not None:
