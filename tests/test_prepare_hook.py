@@ -195,6 +195,35 @@ async def test_allowed_companies_without_a_readable_directory_only_passes_listed
   assert "may contain other companies" in text
 
 
+async def test_a_call_for_another_environment_is_refused_when_the_connection_reaches_one(
+    harness, monkeypatch: pytest.MonkeyPatch) -> None:
+  # Seen live on 11-10-2026: a connection that had lost its second environment
+  # ran a call for 'Sandbox-BE' in the one that was left, without a word.
+  run, _ = harness
+
+  def no_session(company: str):
+    raise AssertionError(f"no upstream session may open for {company!r}")
+
+  def build_with_directory(config, state, notifier, logger):
+    return proxy._Runtime(
+        config=config, url="https://example.invalid", auth=None, registry=None,  # type: ignore[arg-type]
+        cache=proxy._ToolsCache(ttl_seconds=60.0), directory=_Directory(config, API_PAYLOAD),
+        companies=proxy._CompanySessions("CRONUS BE", no_session, logger),
+        manager=_FakeManager(state, config))  # type: ignore[arg-type]
+
+  monkeypatch.setattr(proxy, "_build_runtime", build_with_directory)
+  config = dataclasses.replace(_cfg(None), initial_tools_wait_seconds=0)
+  async with run(config, None) as client:
+    other = await asyncio.wait_for(
+        client.call_tool("List_Customers_PAG30009", {"environment": "Sandbox-BE"}), 5)
+    own = await asyncio.wait_for(
+        client.call_tool("List_Customers_PAG30009", {"environment": "dev"}), 5)
+  text = other.content[0].text
+  assert other.isError and text.startswith("Environment 'Sandbox-BE' is not available for this connection")
+  assert "Available: Dev." in text and "does not exist" not in text
+  assert not own.isError  # naming the connection's own environment changes nothing
+
+
 async def test_a_call_in_a_company_outside_allowed_companies_is_not_available(
     harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
   run, _ = harness
