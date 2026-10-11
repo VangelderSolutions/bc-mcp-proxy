@@ -232,6 +232,11 @@ class EnvironmentDirectory:
     return self._default
 
   @property
+  def note(self) -> Optional[str]:
+    """Why an environment is absent, as the embedding package worded it."""
+    return self._note
+
+  @property
   def names(self) -> list[str]:
     return list(self._directories)
 
@@ -252,7 +257,8 @@ class EnvironmentDirectory:
   async def describe(self) -> str:
     """One text covering every environment: what bc_list_companies returns
     when the connection reaches more than one."""
-    lines = [f"This connection reaches {len(self._directories)} Business Central environments. "
+    count = len(self._directories)
+    lines = [f"This connection reaches {count} Business Central environment{'' if count == 1 else 's'}. "
              f"Pass an environment name as the '{ENVIRONMENT_ARGUMENT}' argument of any tool, and "
              f"a company name as '{COMPANY_ARGUMENT}'; leaving both out uses environment "
              f"'{self._default}' and its default company. Each environment holds its own data, and "

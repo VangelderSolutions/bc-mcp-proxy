@@ -1303,7 +1303,14 @@ def _environment_configs(config: ProxyConfig) -> list[tuple[str, ProxyConfig]]:
 
 
 def _environment_switch_on(config: ProxyConfig) -> bool:
-  return config.allow_company_switch and len(_environment_targets(config)) > 1
+  """More than one environment, or one with a note about the ones that fell
+  away. Without the second case a client that asks for such an environment
+  cannot name it, the call runs in the one that is left, and the user reads
+  another environment's data as the one they asked for (seen live on
+  11-10-2026)."""
+  if not config.allow_company_switch:
+    return False
+  return len(_environment_targets(config)) > 1 or bool((config.environment_note or "").strip())
 
 
 def _build_runtime(
@@ -1573,7 +1580,8 @@ def build_server(
                 f"Environment '{wanted_environment}' is not available for this connection. "
                 f"Available: {', '.join(environments.names)}. The environment may still exist "
                 "in Business Central; this connection reaches the ones listed by "
-                f"{LIST_COMPANIES_TOOL}.", logger)
+                f"{LIST_COMPANIES_TOOL}." + (f" {environments.note}" if environments.note else ""),
+                logger)
           environment = resolved_environment
           directory = environments.directory(environment)
           target_config = directory.config
