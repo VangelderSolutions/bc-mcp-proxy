@@ -49,12 +49,12 @@ dependencies = [
   # See dxt/requirements.in for the per-pin Snyk advisory IDs and
   # the rationale for exact (==) pins instead of >=.
   "h11==0.16.0",
-  "cryptography==50.0.1",
+  "cryptography==50.0.2",
   "pyjwt==2.15.1",
-  "python-dotenv==1.2.3",
+  "python-dotenv==1.2.4",
   "python-multipart==0.0.32",
   "requests==2.34.2",
-  "starlette==1.6.0",
+  "starlette==1.7.0",
   "urllib3==2.8.0"
 ]
 
