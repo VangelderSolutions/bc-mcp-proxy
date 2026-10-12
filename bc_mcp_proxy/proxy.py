@@ -4,6 +4,7 @@ import asyncio
 import base64
 import dataclasses
 import email.utils
+import functools
 import logging
 import re
 import time
@@ -779,6 +780,9 @@ class _UpstreamConnectionManager:
     # and force the run-loop to reopen the upstream connection.
     self._reconnect_requested = asyncio.Event()
     self._reconnect_reason: str = ""
+    # Called with the reason when Business Central permanently rejects this
+    # connection, just before the sticky fatal is recorded.
+    self.on_rejected: Optional[Callable[[str], None]] = None
 
   def request_reconnect(self, *, reason: str) -> None:
     """Tear down the current upstream and reconnect on the next loop iteration.
@@ -813,6 +817,10 @@ class _UpstreamConnectionManager:
           self.state.clear_session()
           message = _format_upstream_rejection(rejection, self.config)
           self.logger.error(message)
+          if self.on_rejected is not None:
+            # Before the fatal: whoever reads it must already find what the
+            # callback set up (see _default_refused).
+            self.on_rejected(rejection)
           self.state.set_fatal(
               McpError(ErrorData(code=INTERNAL_ERROR, message=message)))
           await asyncio.Event().wait()
@@ -1209,6 +1217,12 @@ class _Runtime:
   # The standard-API token provider the directories were built with. Kept so
   # a live reconfigure can rebuild them without a second sign-in.
   api_provider: Optional[TokenProvider] = None
+  # Why Business Central refuses the MCP connection in the default
+  # environment, set only when the connection reaches other environments
+  # (see _default_refused); `elsewhere` is the task that fetches the tool list
+  # from one of those.
+  refused: Optional[str] = None
+  elsewhere: Optional[asyncio.Task[None]] = None
 
 
 @dataclasses.dataclass
@@ -1260,18 +1274,113 @@ async def _wait_for_first_tools(slot: RuntimeSlot, seconds: float) -> float:
   lists tools on every call (the MCP Python SDK validates call results that
   way) never waits twice, and a Business Central cold start still cannot run
   a request into the client's timeout. Returns the seconds waited."""
-  if seconds <= 0 or slot.state.fatal is not None or _slot_has_tools(slot):
+  def failed() -> bool:
+    # A refused default environment is not the end while the tool list is
+    # still being fetched from another one.
+    return slot.state.fatal is not None and not _listing_elsewhere(slot)
+
+  if seconds <= 0 or failed() or _slot_has_tools(slot):
     return 0.0
   loop = asyncio.get_running_loop()
   started = loop.time()
   if slot.first_tools_deadline is None:
     slot.first_tools_deadline = started + seconds
-  while slot.state.fatal is None and not _slot_has_tools(slot):
+  while not failed() and not _slot_has_tools(slot):
     remaining = slot.first_tools_deadline - loop.time()
     if remaining <= 0:
       break
     await asyncio.sleep(min(_FIRST_TOOLS_POLL_SECONDS, remaining))
   return loop.time() - started
+
+
+def _listing_elsewhere(slot: RuntimeSlot) -> bool:
+  """True while the tool list is being fetched from another environment,
+  because the default one refuses the MCP connection."""
+  runtime = slot.runtime
+  return (runtime is not None and runtime.refused is not None
+          and runtime.elsewhere is not None and not runtime.elsewhere.done())
+
+
+def _serves_without_default(slot: RuntimeSlot) -> bool:
+  """True when the default environment refuses the MCP connection and the
+  connection goes on for the other environments: their tool list is there or
+  on its way. When no environment delivers one, the refusal is the answer."""
+  runtime = slot.runtime
+  if runtime is None or runtime.refused is None:
+    return False
+  return _slot_has_tools(slot) or _listing_elsewhere(slot)
+
+
+def _default_refused(slot: RuntimeSlot, logger: logging.Logger, reason: str) -> None:
+  """Business Central refuses the MCP connection in the default environment.
+
+  With one environment that ends the connection: the refusal is all there is
+  to say. With more, the others still work, but every request used to die on
+  the default one's error, also the tool list, so a client was left with
+  nothing and no reason (seen live on 12-10-2026: a production environment
+  without an active MCP configuration as the default, next to three
+  sandboxes). Now the connection goes on: the tool list comes from another
+  environment and a call says where it should run.
+
+  Nothing takes the default's place. A call without an environment is refused
+  with the reason rather than run somewhere else: the user asked for nothing
+  in particular, and a change meant for a sandbox must not land in production
+  because the sandbox happened to refuse the connection."""
+  runtime = slot.runtime
+  if runtime is None or runtime.environments is None or runtime.companies is None:
+    return
+  others = [name for name in runtime.environments.names if not runtime.environments.is_default(name)]
+  if not others:
+    return
+  runtime.refused = reason
+  logger.warning(
+      "Environment %r refuses the MCP connection (%s); the connection goes on for %s, and a call "
+      "has to name one of them", runtime.config.environment, reason, ", ".join(others))
+  runtime.elsewhere = asyncio.create_task(
+      _list_tools_elsewhere(runtime, others, slot.notifier, logger), name="bc-mcp-tools-elsewhere")
+
+
+async def _list_tools_elsewhere(
+    runtime: _Runtime, others: list[str], notifier: _ClientNotifier, logger: logging.Logger) -> None:
+  """Fill the tools cache from the first other environment that answers."""
+  assert runtime.environments is not None and runtime.companies is not None
+  for name in others:
+    company = runtime.environments.directory(name).default_company
+    if not company:
+      continue
+    holder, _ = runtime.companies.get_or_start(company, name)
+    try:
+      session = await asyncio.wait_for(holder.wait_active(), runtime.config.http_timeout_seconds)
+      result = await session.list_tools()
+    except asyncio.CancelledError:
+      raise
+    except Exception as exc:  # noqa: BLE001 - the next environment may answer
+      logger.warning("The tool list could not be read from environment %r (%s)", name, type(exc).__name__)
+      continue
+    runtime.cache.store(result)
+    logger.info("Tool list taken from environment %r (%d tools)", name,
+                len(getattr(result, "tools", []) or []))
+    await notifier.maybe_notify(runtime.cache.get_any())
+    return
+  logger.error("No other environment delivered a tool list; the refusal of %r stands",
+               runtime.config.environment)
+
+
+def _default_refused_note(runtime: _Runtime) -> str:
+  """What a client is told when the default environment refuses the MCP
+  connection: the reason, where a call can run, and who can put it right."""
+  assert runtime.environments is not None
+  config = runtime.config
+  own = config.environment.strip()
+  others = ", ".join(n for n in runtime.environments.names if not runtime.environments.is_default(n))
+  configuration = (f"the MCP configuration '{config.configuration_name}'" if config.configuration_name
+                   else "an MCP configuration")
+  return (f"Business Central refuses the MCP connection in environment '{own}', the default of this "
+          f"connection ({runtime.refused}). Nothing can run there, and a call without an "
+          f"'{ENVIRONMENT_ARGUMENT}' argument is not run in another environment in its place. Pass one "
+          f"of the other environments as '{ENVIRONMENT_ARGUMENT}': {others}. For '{own}' itself, a "
+          f"Business Central administrator has to check there that {configuration} exists and is "
+          "active, and that this account may use it.")
 
 
 def _environment_targets(config: ProxyConfig) -> tuple[EnvironmentTarget, ...]:
@@ -1504,7 +1613,8 @@ def build_server(
     runtime = slot.runtime
 
     fatal = state.fatal
-    if fatal is not None:
+    without_default = _serves_without_default(slot)
+    if fatal is not None and not without_default:
       # Upstream permanently rejected us (4xx). Surface the actionable
       # error rather than an empty or stale list the user can't act on.
       logger.debug("Surfacing fatal upstream error on tools/list")
@@ -1529,8 +1639,13 @@ def build_server(
     if stale is not None:
       # We have something cached but it's beyond the TTL. Serve it now
       # to keep the client unblocked, and refresh in the background.
-      logger.debug("Serving stale tools/list; refreshing in background")
       notifier.record_served(stale)
+      if without_default:
+        # The refresh reads the default session, which is refused; the list
+        # taken from another environment stays as it is.
+        logger.debug("Serving the tools/list taken from another environment")
+        return stale
+      logger.debug("Serving stale tools/list; refreshing in background")
       asyncio.create_task(
           _refresh_tools_cache(state, cache, config_now, logger, notifier,
                                disk_cache=runtime.disk_cache))
@@ -1570,6 +1685,8 @@ def build_server(
       if name == LIST_COMPANIES_TOOL:
         described = await (environments.describe() if environments is not None
                            else directory.describe())
+        if runtime.refused is not None:
+          described += "\n\n" + _default_refused_note(runtime)
         return CallToolResult(content=[TextContent(type="text", text=described)])
       if environments is not None:
         wanted_environment, arguments = pop_environment(arguments)
@@ -1585,6 +1702,8 @@ def build_server(
           environment = resolved_environment
           directory = environments.directory(environment)
           target_config = directory.config
+        if environment is None and runtime.refused is not None:
+          return company_error(_default_refused_note(runtime), logger)
       else:
         # One environment: a call that names another one must not run here.
         # A client can still name one it saw earlier, when the connection
@@ -1721,13 +1840,20 @@ async def run_slot_upstream(
       await asyncio.Event().wait()
       return  # pragma: no cover - only on cancellation, which re-raises
     await context.drain()
+  slot.runtime.manager.on_rejected = functools.partial(_default_refused, slot, logger)
   await slot.runtime.manager.run()
 
 
 async def close_slot(slot: RuntimeSlot) -> None:
   """Close the per-company upstream sessions of a slot. The default session
   closes with the task that runs run_slot_upstream."""
-  if slot.runtime is not None and slot.runtime.companies is not None:
+  if slot.runtime is None:
+    return
+  elsewhere = slot.runtime.elsewhere
+  if elsewhere is not None and not elsewhere.done():
+    elsewhere.cancel()
+    await asyncio.gather(elsewhere, return_exceptions=True)
+  if slot.runtime.companies is not None:
     await slot.runtime.companies.close()
 
 
