@@ -14,7 +14,9 @@ import dataclasses
 import logging
 from typing import Any, Optional
 
+import httpx
 import pytest
+from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from bc_mcp_proxy import proxy
@@ -347,6 +349,79 @@ async def test_a_fallen_away_environment_is_refused_with_its_reason(running) -> 
   assert described.startswith("This connection reaches 1 Business Central environment. ")
   assert "Environment 'Development-V28' (default for this connection):" in described
   assert described.rstrip().endswith(SWITCHED_OFF)
+
+
+# -- the default environment refuses the MCP connection --------------------------
+
+
+class _Refusing(proxy._UpstreamConnectionManager):
+  """The real manager, with Business Central answering the connect with HTTP 400."""
+
+  async def _open_and_serve(self) -> None:
+    request = httpx.Request("POST", "https://example.invalid")
+    raise httpx.HTTPStatusError("400", request=request, response=httpx.Response(400, request=request))
+
+
+def _runtime_with_a_refusing_default(config, state, notifier, logger):
+  runtime = _runtime_with_environments(config, state, notifier, logger)
+  runtime.manager = _Refusing(state=state, config=config, url="https://example.invalid", headers={},
+                              auth=None, logger=logger)  # type: ignore[arg-type]
+  return runtime
+
+
+@pytest.fixture
+def refused(harness, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
+  run, _ = harness
+  monkeypatch.setattr(proxy, "_build_runtime", _runtime_with_a_refusing_default)
+
+  def start(config: ProxyConfig):
+    return run(dataclasses.replace(config, initial_tools_wait_seconds=5), None)
+
+  return start
+
+
+async def test_a_refused_default_environment_leaves_the_others_working(refused) -> None:
+  # Seen live on 12-10-2026 in Copilot: production as the default, without an
+  # active MCP configuration, next to sandboxes. Every request died on the
+  # default's error, the tool list too, so the client had nothing to show.
+  async with refused(_cfg(SANDBOX)) as client:
+    tools = await asyncio.wait_for(client.list_tools(), 10)
+    nowhere = await _text(client, {})
+    named = await _text(client, {ENVIRONMENT_ARGUMENT: "development-v28"})
+    sandbox = await _text(client, {ENVIRONMENT_ARGUMENT: "Sandbox-BE"})
+    listing = await asyncio.wait_for(client.call_tool(LIST_COMPANIES_TOOL, {}), 5)
+  assert [t.name for t in tools.tools] == ["List_Customers_PAG30009"]
+  for answer in (nowhere, named):
+    text = answer.content[0].text
+    assert answer.isError
+    assert text.startswith("Business Central refuses the MCP connection in environment 'Development-V28', "
+                           "the default of this connection (HTTP 400).")
+    assert "is not run in another environment in its place" in text
+    assert "Pass one of the other environments as 'environment': Sandbox-BE." in text
+    assert "the MCP configuration 'Demo V28 MCP Dynamic' exists and is active" in text
+  assert not sandbox.isError and sandbox.content[0].text == "List_Customers_PAG30009 in CRONUS BE"
+  described = listing.content[0].text
+  assert "Environment 'Sandbox-BE':" in described
+  assert described.rstrip().endswith("and that this account may use it.")
+
+
+async def test_a_refused_default_environment_ends_a_connection_that_reaches_no_other(refused) -> None:
+  async with refused(_cfg()) as client:
+    with pytest.raises(McpError, match="HTTP 400"):
+      await asyncio.wait_for(client.list_tools(), 10)
+    answer = await _text(client, {})
+  # The refusal as it always was: the one environment has nowhere else to point.
+  assert answer.isError and "Business Central rejected the connection (HTTP 400)" in answer.content[0].text
+  assert "Pass one of the other environments" not in answer.content[0].text
+
+
+async def test_the_refusal_stands_when_no_other_environment_delivers_a_tool_list(refused) -> None:
+  # Without a default company the other environment cannot open a session on
+  # its own, so there is no tool list to offer and the refusal is the answer.
+  without_company = dataclasses.replace(SANDBOX, company=None)
+  async with refused(_cfg(without_company)) as client:
+    with pytest.raises(McpError, match="HTTP 400"):
+      await asyncio.wait_for(client.list_tools(), 10)
 
 
 def test_the_built_runtime_offers_the_environment_argument_with_one_environment() -> None:
